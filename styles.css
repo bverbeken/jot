@@ -168,6 +168,14 @@
 		0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
+.jot-modal-buttons {
+	display: flex;
+	gap: 8px;
+	margin-top: 16px;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+}
+
 /* Undo/redo with no history available — visible but unclickable. */
 .jot-palette-item.is-disabled {
 	opacity: 0.35;

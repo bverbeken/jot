@@ -1,4 +1,5 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf } from 'obsidian';
+import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf } from 'obsidian';
+import { LineCapStyle, PDFDocument, PDFPage, rgb } from 'pdf-lib';
 import { DEFAULT_TOOL_STATE, Palette, Tool, ToolState } from './palette';
 
 export type Handedness = 'right' | 'left';
@@ -87,6 +88,16 @@ export default class JotPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new JotSettingTab(this.app, this));
+		this.addCommand({
+			id: 'merge-notes-into-pdf',
+			name: 'Merge notes into PDF',
+			checkCallback: (checking) => {
+				const path = this.getActivePdfFilePath();
+				if (!path) return false;
+				if (!checking) void this.startMergeFlow(path);
+				return true;
+			},
+		});
 		this.palette = new Palette(
 			this.toolState,
 			(state) => {
@@ -740,6 +751,93 @@ export default class JotPlugin extends Plugin {
 		this.scheduleSave(path);
 	}
 
+	private async startMergeFlow(pdfPath: string) {
+		await this.ensureLoaded(pdfPath);
+		const hasStrokes = this.pdfHasStrokes(pdfPath);
+		if (!hasStrokes) {
+			new Notice('Jot: no notes on this PDF to merge.');
+			return;
+		}
+		new ExportChoiceModal(this.app, pdfPath, (choice) => {
+			if (choice === 'cancel') return;
+			void this.runMerge(pdfPath, choice);
+		}).open();
+	}
+
+	private async runMerge(pdfPath: string, choice: 'overwrite' | 'copy') {
+		try {
+			const outPath = await this.doMerge(pdfPath, choice);
+			if (choice === 'overwrite') {
+				await this.discardSidecar(pdfPath);
+			}
+			new Notice(`Jot: notes merged into ${outPath}`);
+		} catch (err) {
+			console.error(`${PLUGIN_LOG} merge failed:`, err);
+			new Notice(
+				`Jot: merge failed — ${err instanceof Error ? err.message : 'see console'}`,
+			);
+		}
+	}
+
+	private pdfHasStrokes(pdfPath: string): boolean {
+		const prefix = pdfPath + '::';
+		for (const [key, strokes] of this.strokes.entries()) {
+			if (key.startsWith(prefix) && strokes.length > 0) return true;
+		}
+		return false;
+	}
+
+	private async doMerge(
+		pdfPath: string,
+		choice: 'overwrite' | 'copy',
+	): Promise<string> {
+		const bytes = await this.app.vault.adapter.readBinary(pdfPath);
+		const pdfDoc = await PDFDocument.load(bytes);
+		const pages = pdfDoc.getPages();
+		for (let i = 0; i < pages.length; i++) {
+			const page = pages[i];
+			if (!page) continue;
+			const pageNumber = i + 1;
+			const strokes = this.strokes.get(pageKey(pdfPath, pageNumber)) ?? [];
+			if (strokes.length === 0) continue;
+			drawStrokesOnPdfPage(page, strokes);
+		}
+		const out = await pdfDoc.save();
+		const outPath =
+			choice === 'overwrite'
+				? pdfPath
+				: pdfPath.replace(/\.pdf$/i, '.annotated.pdf');
+		await this.app.vault.adapter.writeBinary(outPath, out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer);
+		return outPath;
+	}
+
+	private async discardSidecar(pdfPath: string) {
+		const path = this.inkPathFor(pdfPath);
+		try {
+			if (await this.app.vault.adapter.exists(path)) {
+				await this.app.vault.adapter.remove(path);
+			}
+		} catch (err) {
+			console.error(`${PLUGIN_LOG} could not delete sidecar ${path}:`, err);
+		}
+		// Drop in-memory strokes for this PDF and reset its undo history so a
+		// fresh editing session starts on top of the now-baked PDF.
+		const prefix = pdfPath + '::';
+		for (const key of [...this.strokes.keys()]) {
+			if (key.startsWith(prefix)) this.strokes.delete(key);
+		}
+		this.undoStacks.delete(pdfPath);
+		this.redoStacks.delete(pdfPath);
+		// Redraw any currently-open overlays for this PDF so the user sees
+		// the cleared state immediately.
+		const leaf = this.getActivePdfLeaf();
+		if (leaf) {
+			leaf.view.containerEl
+				.querySelectorAll<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`)
+				.forEach((canvas) => this.redrawPage(canvas));
+		}
+	}
+
 	private overlayForKey(key: string): HTMLCanvasElement | null {
 		const leaf = this.getActivePdfLeaf();
 		if (!leaf) return null;
@@ -861,6 +959,113 @@ function strokeIntersects(
 		if (dx * dx + dy * dy < r2) return true;
 	}
 	return false;
+}
+
+function drawStrokesOnPdfPage(page: PDFPage, strokes: Stroke[]) {
+	const pageW = page.getWidth();
+	const pageH = page.getHeight();
+	for (const stroke of strokes) {
+		if (stroke.points.length < 2) continue;
+		const c = hexToRgb(stroke.color);
+		const baseWidth = stroke.width * pageH;
+		const color = rgb(c.r, c.g, c.b);
+		if (stroke.tool === 'highlighter') {
+			const thickness = baseWidth * HIGHLIGHTER_WIDTH_FACTOR;
+			for (let i = 1; i < stroke.points.length; i++) {
+				const a = stroke.points[i - 1];
+				const b = stroke.points[i];
+				if (!a || !b) continue;
+				page.drawLine({
+					start: { x: a.x * pageW, y: pageH - a.y * pageH },
+					end: { x: b.x * pageW, y: pageH - b.y * pageH },
+					thickness,
+					color,
+					opacity: HIGHLIGHTER_ALPHA,
+					lineCap: LineCapStyle.Butt,
+				});
+			}
+			continue;
+		}
+		for (let i = 1; i < stroke.points.length; i++) {
+			const a = stroke.points[i - 1];
+			const b = stroke.points[i];
+			if (!a || !b) continue;
+			const avgPressure = (a.pressure + b.pressure) / 2;
+			const clamped = Math.max(0, Math.min(1, avgPressure));
+			const factor =
+				PRESSURE_MIN_FACTOR +
+				(PRESSURE_MAX_FACTOR - PRESSURE_MIN_FACTOR) * clamped;
+			page.drawLine({
+				start: { x: a.x * pageW, y: pageH - a.y * pageH },
+				end: { x: b.x * pageW, y: pageH - b.y * pageH },
+				thickness: baseWidth * factor,
+				color,
+				opacity: 1,
+				lineCap: LineCapStyle.Round,
+			});
+		}
+	}
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+	const h = hex.replace('#', '').padEnd(6, '0').slice(0, 6);
+	return {
+		r: (parseInt(h.slice(0, 2), 16) || 0) / 255,
+		g: (parseInt(h.slice(2, 4), 16) || 0) / 255,
+		b: (parseInt(h.slice(4, 6), 16) || 0) / 255,
+	};
+}
+
+class ExportChoiceModal extends Modal {
+	private onChoice: (choice: 'overwrite' | 'copy' | 'cancel') => void;
+	private pdfPath: string;
+
+	constructor(
+		app: App,
+		pdfPath: string,
+		onChoice: (choice: 'overwrite' | 'copy' | 'cancel') => void,
+	) {
+		super(app);
+		this.pdfPath = pdfPath;
+		this.onChoice = onChoice;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl('h2', { text: 'Merge notes into PDF' });
+		contentEl.createEl('p', {
+			text: 'Bake the strokes for this PDF into a PDF file. The sidecar .ink.json is dropped only if you overwrite the original.',
+		});
+		const annotatedName = this.pdfPath
+			.replace(/.*\//, '')
+			.replace(/\.pdf$/i, '.annotated.pdf');
+		const buttons = contentEl.createDiv({ cls: 'jot-modal-buttons' });
+		const copyBtn = buttons.createEl('button', {
+			text: `Save as "${annotatedName}"`,
+		});
+		copyBtn.classList.add('mod-cta');
+		copyBtn.addEventListener('click', () => {
+			this.onChoice('copy');
+			this.close();
+		});
+		const overwriteBtn = buttons.createEl('button', {
+			text: 'Overwrite original',
+		});
+		overwriteBtn.addEventListener('click', () => {
+			this.onChoice('overwrite');
+			this.close();
+		});
+		const cancelBtn = buttons.createEl('button', { text: 'Cancel' });
+		cancelBtn.addEventListener('click', () => {
+			this.onChoice('cancel');
+			this.close();
+		});
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
 }
 
 class JotSettingTab extends PluginSettingTab {
