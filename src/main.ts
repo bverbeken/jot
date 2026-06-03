@@ -319,6 +319,24 @@ export default class ObsidianInkPlugin extends Plugin {
 			return;
 		}
 
+		// On iPadOS, the OS-level gesture recognizer runs at the legacy
+		// touch-event layer. Without this, a long Apple Pencil stroke gets
+		// reinterpreted as a scroll partway through, cancelling our pointer
+		// capture. preventDefault on touchstart/move for stylus touches stops
+		// the preemption; finger touches are left alone so they still scroll
+		// the PDF view normally.
+		const blockStylusGesture = (e: TouchEvent) => {
+			for (let i = 0; i < e.touches.length; i++) {
+				const t = e.touches.item(i) as Touch & { touchType?: string };
+				if (t?.touchType === 'stylus') {
+					e.preventDefault();
+					return;
+				}
+			}
+		};
+		canvas.addEventListener('touchstart', blockStylusGesture, { passive: false });
+		canvas.addEventListener('touchmove', blockStylusGesture, { passive: false });
+
 		let inProgress: NormalizedPoint[] | null = null;
 
 		const toNormalized = (e: PointerEvent): NormalizedPoint => {
