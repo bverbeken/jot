@@ -46,7 +46,7 @@ const ANCHOR_OFFSET_PX = 60;
 
 // Each main-arc item occupies this much arc.
 const ITEM_ANGULAR_DEG = 24;
-const MAIN_ITEM_COUNT = 6;
+const MAIN_ITEM_COUNT = 5;
 const MAIN_ITEM_STEP_RAD = (ITEM_ANGULAR_DEG * Math.PI) / 180;
 // Sub-arc step is chosen so adjacent sub items sit the same chord distance
 // apart as adjacent main items — equal visual gap on both tiers despite the
@@ -62,9 +62,8 @@ const SUB_ITEM_STEP_RAD =
 const UNDO_SLOT_INDEX = 0;
 const REDO_SLOT_INDEX = 1;
 const TOOL_SLOT_INDEX = 2;
-const ERASER_SLOT_INDEX = 3;
-const WIDTH_SLOT_INDEX = 4;
-const COLOR_SLOT_INDEX = 5;
+const WIDTH_SLOT_INDEX = 3;
+const COLOR_SLOT_INDEX = 4;
 
 // Tilt away from the pen hand: 20° off straight up.
 const TILT_OFFSET_DEG = 20;
@@ -91,9 +90,10 @@ const SUB_SLOT_OF: Record<Exclude<SubArc, null>, number> = {
 	width: WIDTH_SLOT_INDEX,
 };
 
-const DRAWING_TOOLS: { id: Exclude<Tool, 'eraser'>; icon: string; label: string }[] = [
+const TOOLS: { id: Tool; icon: string; label: string }[] = [
 	{ id: 'pen', icon: 'pencil', label: 'Pen' },
 	{ id: 'highlighter', icon: 'highlighter', label: 'Highlighter' },
+	{ id: 'eraser', icon: 'eraser', label: 'Eraser' },
 ];
 
 const TOOL_ICON: Record<Tool, string> = {
@@ -130,18 +130,11 @@ export class Palette {
 	private flipDown = false;
 	private subArc: SubArc = null;
 	private handedness: Handedness = 'right';
-	// Last drawing tool the user picked (pen or highlighter). The main-arc
-	// tool slot shows this even when eraser is the active tool, so switching
-	// back to drawing is one tap, not two.
-	private lastDrawingTool: Exclude<Tool, 'eraser'> = 'pen';
 
 	constructor(initial: ToolState, onChange: OnChange, hooks: PaletteHooks) {
 		this.state = { ...initial };
 		this.onChange = onChange;
 		this.hooks = hooks;
-		if (initial.tool === 'pen' || initial.tool === 'highlighter') {
-			this.lastDrawingTool = initial.tool;
-		}
 	}
 
 	getState(): ToolState {
@@ -225,7 +218,6 @@ export class Palette {
 		this.renderUndoSlot(host, doc, this.mainOffset(UNDO_SLOT_INDEX));
 		this.renderRedoSlot(host, doc, this.mainOffset(REDO_SLOT_INDEX));
 		this.renderToolSlot(host, doc, this.mainOffset(TOOL_SLOT_INDEX));
-		this.renderEraserSlot(host, doc, this.mainOffset(ERASER_SLOT_INDEX));
 		this.renderWidthSlot(host, doc, this.mainOffset(WIDTH_SLOT_INDEX));
 		this.renderColorSlot(host, doc, this.mainOffset(COLOR_SLOT_INDEX));
 
@@ -407,27 +399,12 @@ export class Palette {
 	}
 
 	private renderToolSlot(host: HTMLElement, doc: Document, off: Offset) {
-		const icon = TOOL_ICON[this.lastDrawingTool];
+		const icon = TOOL_ICON[this.state.tool];
 		const btn = this.makeItem(doc, 'jot-palette-tool jot-palette-slot', off);
 		setIcon(btn, icon);
-		btn.setAttribute('aria-label', `Tool (current: ${this.lastDrawingTool})`);
-		if (this.state.tool === this.lastDrawingTool) btn.classList.add('is-active');
+		btn.setAttribute('aria-label', `Tool (current: ${this.state.tool})`);
 		if (this.subArc === 'tool') btn.classList.add('is-open');
 		btn.addEventListener('click', () => this.toggleSub('tool'));
-		host.appendChild(btn);
-	}
-
-	private renderEraserSlot(host: HTMLElement, doc: Document, off: Offset) {
-		const btn = this.makeItem(doc, 'jot-palette-tool jot-palette-slot', off);
-		setIcon(btn, 'eraser');
-		btn.setAttribute('aria-label', 'Eraser');
-		if (this.state.tool === 'eraser') btn.classList.add('is-active');
-		btn.addEventListener('click', () => {
-			this.state.tool = 'eraser';
-			this.subArc = null;
-			this.onChange(this.state);
-			this.rerender();
-		});
 		host.appendChild(btn);
 	}
 
@@ -447,7 +424,7 @@ export class Palette {
 
 	private subArcItemCount(): number {
 		if (this.subArc === 'color') return PALETTE_COLORS.length;
-		if (this.subArc === 'tool') return DRAWING_TOOLS.length;
+		if (this.subArc === 'tool') return TOOLS.length;
 		if (this.subArc === 'width') return PALETTE_WIDTHS.length;
 		return 0;
 	}
@@ -473,10 +450,10 @@ export class Palette {
 	}
 
 	private renderSubTools(host: HTMLElement, doc: Document) {
-		const n = DRAWING_TOOLS.length;
+		const n = TOOLS.length;
 		const subCenter = this.slotAngle(TOOL_SLOT_INDEX);
 		for (let i = 0; i < n; i++) {
-			const t = DRAWING_TOOLS[i];
+			const t = TOOLS[i];
 			if (!t) continue;
 			const off = this.subOffset(i, n, subCenter);
 			const btn = this.makeItem(doc, 'jot-palette-tool', off);
@@ -484,7 +461,6 @@ export class Palette {
 			btn.setAttribute('aria-label', t.label);
 			btn.addEventListener('click', () => {
 				this.state.tool = t.id;
-				this.lastDrawingTool = t.id;
 				this.subArc = null;
 				this.onChange(this.state);
 				this.rerender();
