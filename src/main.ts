@@ -395,7 +395,11 @@ export default class JotPlugin extends Plugin {
 				// releasePointerCapture throws if the pointer isn't captured
 				// (e.g. pointercancel after losing capture) — safe to ignore.
 			}
-			this.redrawPage(canvas);
+			// No redraw needed: the live pointermove handler already painted the
+			// stroke to the canvas, and the stroke is now in the in-memory map for
+			// future redraws (resize, page mutation, file re-open). Reclearing and
+			// repainting here used to wipe the stroke on pointerup in Obsidian's
+			// PDF view — visible during draw, gone the instant the pointer lifted.
 		};
 		canvas.addEventListener('pointerup', finish);
 		canvas.addEventListener('pointercancel', finish);
