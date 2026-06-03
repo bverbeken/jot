@@ -45,6 +45,17 @@
 
 .jot-palette-item {
 	all: unset;
+	/* iOS Safari leaves -webkit-appearance: button on <button> even after
+	   `all: unset`, which forces a min-height and internal padding that
+	   distorted the buttons into ovals on iPad and collapsed the inline SVG
+	   icons. Explicit overrides below restore a clean box on iOS. */
+	-webkit-appearance: none;
+	appearance: none;
+	padding: 0;
+	margin: 0;
+	border: 0;
+	font: inherit;
+	line-height: 0;
 	position: absolute;
 	left: 0;
 	top: 0;
@@ -83,6 +94,9 @@
 .jot-palette-tool svg {
 	width: 20px;
 	height: 20px;
+	display: block;
+	flex-shrink: 0;
+	stroke: currentColor;
 }
 
 
