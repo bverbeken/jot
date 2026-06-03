@@ -43,12 +43,19 @@ const RADIAL_MARGIN_PX = 16;
 // the user pressed without shrinking the radius.
 const ANCHOR_OFFSET_PX = 60;
 
-// Each item occupies this much arc. Sub-arc items get a wider per-item
-// slot than main-arc items so the second tier feels distinct, not packed
-// against the first tier.
+// Each main-arc item occupies this much arc.
 const ITEM_ANGULAR_DEG = 24;
-const SUB_ITEM_ANGULAR_DEG = 28;
 const MAIN_ITEM_COUNT = 4;
+const MAIN_ITEM_STEP_RAD = (ITEM_ANGULAR_DEG * Math.PI) / 180;
+// Sub-arc step is chosen so adjacent sub items sit the same chord distance
+// apart as adjacent main items — equal visual gap on both tiers despite the
+// sub-arc sitting on a larger radius. Derived from the equal-chord condition
+// 2·R_main·sin(step_main/2) = 2·R_sub·sin(step_sub/2).
+const SUB_ITEM_STEP_RAD =
+	2 *
+	Math.asin(
+		(MAIN_ARC_RADIUS / SUB_ARC_RADIUS) * Math.sin(MAIN_ITEM_STEP_RAD / 2),
+	);
 
 // Left-to-right slot indexes on the main arc.
 const TOOL_SLOT_INDEX = 0;
@@ -210,9 +217,8 @@ export class Palette {
 
 	// Angular position (radians) of main-arc slot i.
 	private slotAngle(i: number): number {
-		const step = (ITEM_ANGULAR_DEG * Math.PI) / 180;
 		const center = arcCenterAngle(this.handedness, this.flipDown);
-		return center + (i - (MAIN_ITEM_COUNT - 1) / 2) * step;
+		return center + (i - (MAIN_ITEM_COUNT - 1) / 2) * MAIN_ITEM_STEP_RAD;
 	}
 
 	private renderItems(host: HTMLElement, doc: Document) {
@@ -230,9 +236,7 @@ export class Palette {
 
 	private renderBackground(host: HTMLElement, doc: Document) {
 		const center = arcCenterAngle(this.handedness, this.flipDown);
-		const stepMain = (ITEM_ANGULAR_DEG * Math.PI) / 180;
-		const stepSub = (SUB_ITEM_ANGULAR_DEG * Math.PI) / 180;
-		const mainHalf = ((MAIN_ITEM_COUNT - 1) / 2) * stepMain;
+		const mainHalf = ((MAIN_ITEM_COUNT - 1) / 2) * MAIN_ITEM_STEP_RAD;
 
 		// Compute the angular range as offsets from the fan center, then
 		// widen to include the sub-arc range if one is open.
@@ -241,8 +245,8 @@ export class Palette {
 		if (this.subArc !== null) {
 			const slot = SUB_SLOT_OF[this.subArc];
 			const subN = this.subArcItemCount();
-			const subCenterRel = (slot - (MAIN_ITEM_COUNT - 1) / 2) * stepMain;
-			const subHalf = ((subN - 1) / 2) * stepSub;
+			const subCenterRel = (slot - (MAIN_ITEM_COUNT - 1) / 2) * MAIN_ITEM_STEP_RAD;
+			const subHalf = ((subN - 1) / 2) * SUB_ITEM_STEP_RAD;
 			leftRel = Math.min(leftRel, subCenterRel - subHalf);
 			rightRel = Math.max(rightRel, subCenterRel + subHalf);
 		}
@@ -413,12 +417,13 @@ export class Palette {
 	}
 
 	// Position of sub-arc item i (of n), centered on a given angle, relative
-	// to the press point. Sub-arc spacing is wider than main-arc spacing.
+	// to the press point. Sub-arc step is the equal-chord match to the main
+	// arc so adjacent items have the same visual gap on both tiers.
 	private subOffset(i: number, n: number, centerTheta: number): Offset {
 		const origin = this.arcOrigin();
-		const step = (SUB_ITEM_ANGULAR_DEG * Math.PI) / 180;
-		const span = (n - 1) * step;
-		const theta = n === 1 ? centerTheta : centerTheta - span / 2 + i * step;
+		const span = (n - 1) * SUB_ITEM_STEP_RAD;
+		const theta =
+			n === 1 ? centerTheta : centerTheta - span / 2 + i * SUB_ITEM_STEP_RAD;
 		return {
 			ox: Math.round(origin.ox + SUB_ARC_RADIUS * Math.cos(theta)),
 			oy: Math.round(origin.oy + SUB_ARC_RADIUS * Math.sin(theta)),
