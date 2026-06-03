@@ -2,14 +2,31 @@ import { Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
 
 const PLUGIN_LOG = '[obsidian-ink]';
 const OVERLAY_CLASS = 'obsidian-ink-overlay';
+const OVERLAY_KEY_ATTR = 'data-obsidian-ink-key';
+const PAGE_OBSERVED_ATTR = 'data-obsidian-ink-observed';
+const STROKE_COLOR = '#d33';
+// Stroke width as a fraction of the page's rendered height — keeps lines
+// looking the same thickness relative to the PDF at any zoom level.
+const STROKE_WIDTH = 0.0025;
 
-interface Point {
+interface NormalizedPoint {
 	x: number;
 	y: number;
+	pressure: number;
 }
 
+interface Stroke {
+	points: NormalizedPoint[];
+	color: string;
+	width: number;
+}
+
+const pageKey = (filePath: string, pageNumber: number) =>
+	`${filePath}::${pageNumber}`;
+
 export default class ObsidianInkPlugin extends Plugin {
-	private observers: MutationObserver[] = [];
+	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
+	private strokes = new Map<string, Stroke[]>();
 
 	async onload() {
 		console.log(`${PLUGIN_LOG} onload`);
@@ -47,8 +64,8 @@ export default class ObsidianInkPlugin extends Plugin {
 	}
 
 	onunload() {
-		this.observers.forEach((o) => o.disconnect());
-		this.observers = [];
+		this.containerObservers.forEach((o) => o.disconnect());
+		this.containerObservers.clear();
 	}
 
 	private getActivePdfLeaf(): WorkspaceLeaf | null {
@@ -57,6 +74,13 @@ export default class ObsidianInkPlugin extends Plugin {
 		const viewType = leaf.view.getViewType?.();
 		if (viewType !== 'pdf') return null;
 		return leaf;
+	}
+
+	private getActivePdfFilePath(): string | null {
+		const leaf = this.getActivePdfLeaf();
+		if (!leaf) return null;
+		const file = (leaf.view as { file?: TFile }).file;
+		return file?.path ?? null;
 	}
 
 	private probeActivePdfView() {
@@ -94,26 +118,54 @@ export default class ObsidianInkPlugin extends Plugin {
 	private attachOverlayToActivePdfView() {
 		const leaf = this.getActivePdfLeaf();
 		if (!leaf) return;
+		const filePath = this.getActivePdfFilePath();
+		if (!filePath) return;
 		const container = leaf.view.containerEl;
 
-		this.upgradePages(container);
+		this.upgradePages(container, filePath);
 
-		const obs = new MutationObserver(() => this.upgradePages(container));
+		// One container observer per leaf — looks up the leaf's current file
+		// path at fire time so it stays correct when the user navigates within
+		// the same leaf. Without this guard, layout-change would attach a fresh
+		// observer on every call and the accumulated set would freeze the UI.
+		if (this.containerObservers.has(leaf)) return;
+		const obs = new MutationObserver(() => {
+			const currentPath = this.filePathForLeaf(leaf);
+			if (!currentPath) return;
+			this.upgradePages(container, currentPath);
+		});
 		obs.observe(container, { childList: true, subtree: true });
-		this.observers.push(obs);
-		console.log(`${PLUGIN_LOG} observer attached to PDF view`);
+		this.containerObservers.set(leaf, obs);
 	}
 
-	private upgradePages(container: HTMLElement) {
+	private filePathForLeaf(leaf: WorkspaceLeaf): string | null {
+		const file = (leaf.view as { file?: TFile }).file;
+		return file?.path ?? null;
+	}
+
+	private upgradePages(container: HTMLElement, filePath: string) {
 		const pages = container.querySelectorAll<HTMLElement>('.page');
-		pages.forEach((page) => this.ensureOverlayOnPage(page));
+		pages.forEach((page) => this.ensureOverlayOnPage(page, filePath));
 	}
 
-	private ensureOverlayOnPage(page: HTMLElement) {
-		const existing = page.querySelector<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`);
+	private ensureOverlayOnPage(page: HTMLElement, filePath: string) {
+		const pageNumberAttr = page.getAttribute('data-page-number');
+		const pageNumber = pageNumberAttr ? parseInt(pageNumberAttr, 10) : NaN;
+		if (Number.isNaN(pageNumber)) return;
+		const key = pageKey(filePath, pageNumber);
+
+		const existing = page.querySelector<HTMLCanvasElement>(
+			`canvas.${OVERLAY_CLASS}`,
+		);
 		if (existing) {
-			this.sizeOverlayToPage(existing, page);
-			return;
+			if (existing.getAttribute(OVERLAY_KEY_ATTR) === key) {
+				this.sizeOverlayToPage(existing, page);
+				this.redrawPage(existing);
+				return;
+			}
+			// Stale overlay from a previous PDF — drop it and build fresh so
+			// the wired event handlers reference the current file's key.
+			existing.remove();
 		}
 
 		const pageStyle = getComputedStyle(page);
@@ -123,6 +175,7 @@ export default class ObsidianInkPlugin extends Plugin {
 
 		const overlay = document.createElement('canvas');
 		overlay.className = OVERLAY_CLASS;
+		overlay.setAttribute(OVERLAY_KEY_ATTR, key);
 		overlay.style.position = 'absolute';
 		overlay.style.inset = '0';
 		overlay.style.touchAction = 'none';
@@ -131,31 +184,37 @@ export default class ObsidianInkPlugin extends Plugin {
 
 		this.sizeOverlayToPage(overlay, page);
 		page.appendChild(overlay);
-		console.log(`${PLUGIN_LOG} overlay attached`, {
-			pageNumber: page.getAttribute('data-page-number'),
-			canvas: overlay,
-		});
 
 		this.disableTextLayerInteraction(page);
 		this.wirePointerEvents(overlay);
+		this.redrawPage(overlay);
 
-		const pageObserver = new MutationObserver(() => {
-			if (!page.contains(overlay)) {
-				console.log(`${PLUGIN_LOG} overlay removed by PDF.js, re-adding`);
-				this.disableTextLayerInteraction(page);
-				this.sizeOverlayToPage(overlay, page);
-				page.appendChild(overlay);
-			} else {
-				this.disableTextLayerInteraction(page);
+		// Page-level observers are at most one per .page element across the
+		// plugin's lifetime — guarded by a data attribute so they don't pile
+		// up when overlays are replaced for a different PDF.
+		if (page.getAttribute(PAGE_OBSERVED_ATTR) === '1') return;
+		page.setAttribute(PAGE_OBSERVED_ATTR, '1');
+
+		const findOverlay = () =>
+			page.querySelector<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`);
+
+		new MutationObserver(() => {
+			const current = findOverlay();
+			if (!current) return;
+			this.disableTextLayerInteraction(page);
+			if (!page.contains(current)) {
+				this.sizeOverlayToPage(current, page);
+				page.appendChild(current);
+				this.redrawPage(current);
 			}
-		});
-		pageObserver.observe(page, { childList: true });
-		this.observers.push(pageObserver);
+		}).observe(page, { childList: true });
 
-		const resizeObserver = new ResizeObserver(() => {
-			this.sizeOverlayToPage(overlay, page);
-		});
-		resizeObserver.observe(page);
+		new ResizeObserver(() => {
+			const current = findOverlay();
+			if (!current) return;
+			this.sizeOverlayToPage(current, page);
+			this.redrawPage(current);
+		}).observe(page);
 	}
 
 	private sizeOverlayToPage(overlay: HTMLCanvasElement, page: HTMLElement) {
@@ -180,58 +239,107 @@ export default class ObsidianInkPlugin extends Plugin {
 		}
 	}
 
+	private redrawPage(canvas: HTMLCanvasElement) {
+		const ctx = canvas.getContext('2d');
+		if (!ctx) return;
+		ctx.clearRect(0, 0, canvas.width, canvas.height);
+		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
+		if (!key) return;
+		const strokes = this.strokes.get(key);
+		if (!strokes || strokes.length === 0) return;
+		for (const stroke of strokes) {
+			drawStroke(ctx, stroke, canvas.width, canvas.height);
+		}
+	}
+
 	private wirePointerEvents(canvas: HTMLCanvasElement) {
 		const ctx = canvas.getContext('2d');
 		if (!ctx) {
 			console.error(`${PLUGIN_LOG} no 2d context`);
 			return;
 		}
-		const applyStrokeStyle = () => {
-			ctx.lineWidth = 2;
-			ctx.lineCap = 'round';
-			ctx.lineJoin = 'round';
-			ctx.strokeStyle = '#d33';
-		};
-		applyStrokeStyle();
 
-		let stroke: Point[] | null = null;
+		let inProgress: NormalizedPoint[] | null = null;
 
-		const toLocal = (e: PointerEvent): Point => {
+		const toNormalized = (e: PointerEvent): NormalizedPoint => {
 			const rect = canvas.getBoundingClientRect();
-			return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+			return {
+				x: (e.clientX - rect.left) / rect.width,
+				y: (e.clientY - rect.top) / rect.height,
+				pressure: e.pressure,
+			};
 		};
 
 		canvas.addEventListener('pointerdown', (e) => {
-			console.log(
-				`${PLUGIN_LOG} pointerdown type=${e.pointerType} pressure=${e.pressure}`,
-			);
 			canvas.setPointerCapture(e.pointerId);
-			applyStrokeStyle();
-			const start = toLocal(e);
-			stroke = [start];
+			const first = toNormalized(e);
+			inProgress = [first];
+			applyStrokeStyle(ctx, canvas.height);
 			ctx.beginPath();
-			ctx.moveTo(start.x, start.y);
+			ctx.moveTo(first.x * canvas.width, first.y * canvas.height);
 			e.preventDefault();
 		});
 
 		canvas.addEventListener('pointermove', (e) => {
-			if (!stroke) return;
-			const p = toLocal(e);
-			stroke.push(p);
-			ctx.lineTo(p.x, p.y);
+			if (!inProgress) return;
+			const p = toNormalized(e);
+			inProgress.push(p);
+			ctx.lineTo(p.x * canvas.width, p.y * canvas.height);
 			ctx.stroke();
 			e.preventDefault();
 		});
 
 		const finish = (e: PointerEvent) => {
-			if (!stroke) return;
-			console.log(`${PLUGIN_LOG} stroke ended, points=${stroke.length}`);
-			stroke = null;
+			if (!inProgress) return;
+			const stroke: Stroke = {
+				points: inProgress,
+				color: STROKE_COLOR,
+				width: STROKE_WIDTH,
+			};
+			const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
+			if (key) {
+				const existing = this.strokes.get(key) ?? [];
+				existing.push(stroke);
+				this.strokes.set(key, existing);
+			}
+			inProgress = null;
 			try {
 				canvas.releasePointerCapture(e.pointerId);
 			} catch (_) {}
+			this.redrawPage(canvas);
 		};
 		canvas.addEventListener('pointerup', finish);
 		canvas.addEventListener('pointercancel', finish);
 	}
+}
+
+function applyStrokeStyle(ctx: CanvasRenderingContext2D, canvasHeight: number) {
+	ctx.lineWidth = STROKE_WIDTH * canvasHeight;
+	ctx.lineCap = 'round';
+	ctx.lineJoin = 'round';
+	ctx.strokeStyle = STROKE_COLOR;
+}
+
+function drawStroke(
+	ctx: CanvasRenderingContext2D,
+	stroke: Stroke,
+	width: number,
+	height: number,
+) {
+	if (stroke.points.length === 0) return;
+	ctx.lineWidth = stroke.width * height;
+	ctx.lineCap = 'round';
+	ctx.lineJoin = 'round';
+	ctx.strokeStyle = stroke.color;
+	ctx.beginPath();
+	let started = false;
+	for (const p of stroke.points) {
+		if (!started) {
+			ctx.moveTo(p.x * width, p.y * height);
+			started = true;
+		} else {
+			ctx.lineTo(p.x * width, p.y * height);
+		}
+	}
+	ctx.stroke();
 }
