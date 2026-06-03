@@ -10,6 +10,12 @@ const STROKE_COLOR = '#d33';
 // Stroke width as a fraction of the page's rendered height — keeps lines
 // looking the same thickness relative to the PDF at any zoom level.
 const STROKE_WIDTH = 0.0025;
+// Pressure (0..1) scales the per-segment width by this factor range. The
+// floor keeps a barely-touching stroke visible; the ceiling gives a clear
+// heavy-press marker. Mouse input reports pressure 0.5 (button down), which
+// lands near the middle of the range, so desktop testing looks normal.
+const PRESSURE_MIN_FACTOR = 0.5;
+const PRESSURE_MAX_FACTOR = 1.8;
 const INK_SUFFIX = '.ink.json';
 const SAVE_DEBOUNCE_MS = 250;
 const INK_FORMAT_VERSION = 1;
@@ -353,20 +359,17 @@ export default class JotPlugin extends Plugin {
 			// Finger touch is ignored so it can scroll the PDF view underneath.
 			if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return;
 			canvas.setPointerCapture(e.pointerId);
-			const first = toNormalized(e);
-			inProgress = [first];
-			applyStrokeStyle(ctx, canvas.height);
-			ctx.beginPath();
-			ctx.moveTo(first.x * canvas.width, first.y * canvas.height);
+			inProgress = [toNormalized(e)];
 			e.preventDefault();
 		});
 
 		canvas.addEventListener('pointermove', (e) => {
 			if (!inProgress) return;
+			const prev = inProgress[inProgress.length - 1];
+			if (!prev) return;
 			const p = toNormalized(e);
 			inProgress.push(p);
-			ctx.lineTo(p.x * canvas.width, p.y * canvas.height);
-			ctx.stroke();
+			drawSegment(ctx, prev, p, STROKE_COLOR, STROKE_WIDTH, canvas.width, canvas.height);
 			e.preventDefault();
 		});
 
@@ -399,11 +402,29 @@ export default class JotPlugin extends Plugin {
 	}
 }
 
-function applyStrokeStyle(ctx: CanvasRenderingContext2D, canvasHeight: number) {
-	ctx.lineWidth = STROKE_WIDTH * canvasHeight;
+function widthFactorForPressure(pressure: number): number {
+	const p = Math.max(0, Math.min(1, pressure));
+	return PRESSURE_MIN_FACTOR + (PRESSURE_MAX_FACTOR - PRESSURE_MIN_FACTOR) * p;
+}
+
+function drawSegment(
+	ctx: CanvasRenderingContext2D,
+	a: NormalizedPoint,
+	b: NormalizedPoint,
+	color: string,
+	baseWidth: number,
+	canvasWidth: number,
+	canvasHeight: number,
+) {
+	const avgPressure = (a.pressure + b.pressure) / 2;
+	ctx.lineWidth = baseWidth * widthFactorForPressure(avgPressure) * canvasHeight;
+	ctx.strokeStyle = color;
 	ctx.lineCap = 'round';
 	ctx.lineJoin = 'round';
-	ctx.strokeStyle = STROKE_COLOR;
+	ctx.beginPath();
+	ctx.moveTo(a.x * canvasWidth, a.y * canvasHeight);
+	ctx.lineTo(b.x * canvasWidth, b.y * canvasHeight);
+	ctx.stroke();
 }
 
 function drawStroke(
@@ -412,20 +433,11 @@ function drawStroke(
 	width: number,
 	height: number,
 ) {
-	if (stroke.points.length === 0) return;
-	ctx.lineWidth = stroke.width * height;
-	ctx.lineCap = 'round';
-	ctx.lineJoin = 'round';
-	ctx.strokeStyle = stroke.color;
-	ctx.beginPath();
-	let started = false;
+	let prev: NormalizedPoint | null = null;
 	for (const p of stroke.points) {
-		if (!started) {
-			ctx.moveTo(p.x * width, p.y * height);
-			started = true;
-		} else {
-			ctx.lineTo(p.x * width, p.y * height);
+		if (prev) {
+			drawSegment(ctx, prev, p, stroke.color, stroke.width, width, height);
 		}
+		prev = p;
 	}
-	ctx.stroke();
 }
