@@ -395,8 +395,14 @@ export class Palette {
 		}
 	}
 
-	private makeItem(doc: Document, extraClass: string, off: Offset): HTMLButtonElement {
-		const btn = doc.createElement('button');
+	private makeItem(doc: Document, extraClass: string, off: Offset): HTMLDivElement {
+		// Plain <div role="button"> rather than <button>: iOS Safari keeps
+		// applying min-height and padding to <button> even after `all: unset`
+		// and the explicit webkit resets, so the color/width swatches still
+		// rendered as ovals on iPad. A div has no native styling baggage.
+		const btn = doc.createElement('div');
+		btn.setAttribute('role', 'button');
+		btn.setAttribute('tabindex', '0');
 		btn.className = `jot-palette-item ${extraClass}`;
 		btn.style.setProperty('--ox', `${off.ox}px`);
 		btn.style.setProperty('--oy', `${off.oy}px`);
