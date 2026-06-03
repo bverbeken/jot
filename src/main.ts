@@ -419,6 +419,8 @@ export default class JotPlugin extends Plugin {
 		let downPoint: { clientX: number; clientY: number } | null = null;
 		let longPressTimer: number | null = null;
 		let activePointerId: number | null = null;
+		let holdIndicator: HTMLElement | null = null;
+		let twoFingerIndicator: HTMLElement | null = null;
 		// Finger tracker for the two-finger hold gesture. Keyed by pointerId.
 		const activeTouches = new Map<number, {
 			clientX: number;
@@ -428,11 +430,25 @@ export default class JotPlugin extends Plugin {
 		}>();
 		let twoFingerTimer: number | null = null;
 
+		const removeHoldIndicator = () => {
+			if (holdIndicator) {
+				holdIndicator.remove();
+				holdIndicator = null;
+			}
+		};
+		const removeTwoFingerIndicator = () => {
+			if (twoFingerIndicator) {
+				twoFingerIndicator.remove();
+				twoFingerIndicator = null;
+			}
+		};
+
 		const cancelLongPress = () => {
 			if (longPressTimer !== null) {
 				window.clearTimeout(longPressTimer);
 				longPressTimer = null;
 			}
+			removeHoldIndicator();
 		};
 
 		const cancelTwoFinger = () => {
@@ -440,6 +456,7 @@ export default class JotPlugin extends Plugin {
 				window.clearTimeout(twoFingerTimer);
 				twoFingerTimer = null;
 			}
+			removeTwoFingerIndicator();
 		};
 
 		const toNormalized = (e: PointerEvent): NormalizedPoint => {
@@ -468,16 +485,31 @@ export default class JotPlugin extends Plugin {
 					inProgress === null &&
 					!eraserActive
 				) {
+					const pts = [...activeTouches.values()];
+					const p0 = pts[0];
+					const p1 = pts[1];
+					if (p0 && p1) {
+						const initialCx = (p0.clientX + p1.clientX) / 2;
+						const initialCy = (p0.clientY + p1.clientY) / 2;
+						twoFingerIndicator = createHoldIndicator(
+							activeDocument,
+							initialCx,
+							initialCy,
+							TWO_FINGER_HOLD_MS,
+						);
+						activeDocument.body.appendChild(twoFingerIndicator);
+					}
 					twoFingerTimer = window.setTimeout(() => {
 						twoFingerTimer = null;
+						removeTwoFingerIndicator();
 						if (activeTouches.size !== 2) return;
 						if (this.palette.isOpen()) return;
-						const pts = [...activeTouches.values()];
-						const p0 = pts[0];
-						const p1 = pts[1];
-						if (!p0 || !p1) return;
-						const cx = (p0.clientX + p1.clientX) / 2;
-						const cy = (p0.clientY + p1.clientY) / 2;
+						const pts2 = [...activeTouches.values()];
+						const q0 = pts2[0];
+						const q1 = pts2[1];
+						if (!q0 || !q1) return;
+						const cx = (q0.clientX + q1.clientX) / 2;
+						const cy = (q0.clientY + q1.clientY) / 2;
 						this.palette.show(
 							activeDocument.body,
 							cx,
@@ -518,8 +550,16 @@ export default class JotPlugin extends Plugin {
 			cancelLongPress();
 			const openX = e.clientX;
 			const openY = e.clientY;
+			holdIndicator = createHoldIndicator(
+				activeDocument,
+				openX,
+				openY,
+				LONG_PRESS_MS,
+			);
+			activeDocument.body.appendChild(holdIndicator);
 			longPressTimer = window.setTimeout(() => {
 				longPressTimer = null;
+				removeHoldIndicator();
 				// Stationary hold: abandon any in-progress stroke, wipe any
 				// sub-threshold ink that landed, and pop the palette.
 				inProgress = null;
@@ -973,6 +1013,29 @@ function strokeIntersects(
 		if (dx * dx + dy * dy < r2) return true;
 	}
 	return false;
+}
+
+function createHoldIndicator(
+	doc: Document,
+	clientX: number,
+	clientY: number,
+	durationMs: number,
+): HTMLElement {
+	const el = doc.createElement('div');
+	el.className = 'jot-hold-indicator';
+	el.style.left = `${clientX}px`;
+	el.style.top = `${clientY}px`;
+	el.style.setProperty('--jot-hold-duration', `${durationMs}ms`);
+	const ns = 'http://www.w3.org/2000/svg';
+	const svg = doc.createElementNS(ns, 'svg');
+	svg.setAttribute('viewBox', '0 0 28 28');
+	const circle = doc.createElementNS(ns, 'circle');
+	circle.setAttribute('cx', '14');
+	circle.setAttribute('cy', '14');
+	circle.setAttribute('r', '12');
+	svg.appendChild(circle);
+	el.appendChild(svg);
+	return el;
 }
 
 function drawStrokesOnPdfPage(page: PDFPage, strokes: Stroke[]) {

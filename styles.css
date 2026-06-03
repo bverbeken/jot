@@ -168,6 +168,54 @@
 		0 1px 3px rgba(0, 0, 0, 0.35);
 }
 
+/* Hold-progress ring shown under the press point during the long-press
+   window. Fades in after a brief delay so quick draws don't flash it. */
+.jot-hold-indicator {
+	position: fixed;
+	width: 32px;
+	height: 32px;
+	pointer-events: none;
+	transform: translate(-50%, -50%);
+	z-index: 9999;
+	opacity: 0;
+	animation: jot-hold-show 100ms 60ms ease-out forwards;
+}
+
+.jot-hold-indicator svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+	transform: rotate(-90deg);
+}
+
+.jot-hold-indicator circle {
+	fill: rgba(0, 0, 0, 0.06);
+	stroke: var(--text-accent, #7a5cff);
+	stroke-width: 2;
+	stroke-dasharray: 75.4;
+	stroke-dashoffset: 75.4;
+	animation: jot-hold-fill var(--jot-hold-duration, 300ms) linear forwards;
+}
+
+@keyframes jot-hold-show {
+	to { opacity: 0.9; }
+}
+
+@keyframes jot-hold-fill {
+	to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.jot-hold-indicator {
+		animation: none;
+		opacity: 0.9;
+	}
+	.jot-hold-indicator circle {
+		animation: none;
+		stroke-dashoffset: 0;
+	}
+}
+
 .jot-modal-buttons {
 	display: flex;
 	gap: 8px;
