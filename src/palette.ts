@@ -441,9 +441,8 @@ export class Palette {
 			btn.setAttribute('aria-label', `Color ${color}`);
 			btn.addEventListener('click', () => {
 				this.state.color = color;
-				this.subArc = null;
 				this.onChange(this.state);
-				this.rerender();
+				this.confirmAndDismiss(btn);
 			});
 			host.appendChild(btn);
 		}
@@ -461,9 +460,8 @@ export class Palette {
 			btn.setAttribute('aria-label', t.label);
 			btn.addEventListener('click', () => {
 				this.state.tool = t.id;
-				this.subArc = null;
 				this.onChange(this.state);
-				this.rerender();
+				this.confirmAndDismiss(btn);
 			});
 			host.appendChild(btn);
 		}
@@ -487,12 +485,27 @@ export class Palette {
 			btn.appendChild(dot);
 			btn.addEventListener('click', () => {
 				this.state.width = w;
-				this.subArc = null;
 				this.onChange(this.state);
-				this.rerender();
+				this.confirmAndDismiss(btn);
 			});
 			host.appendChild(btn);
 		}
+	}
+
+	// Flash a check inside the tapped slot, then close the palette.
+	// Respects prefers-reduced-motion (skips the scale-in, still closes).
+	private confirmAndDismiss(btn: HTMLElement) {
+		const doc = btn.ownerDocument;
+		const win = doc.defaultView ?? window;
+		const reducedMotion = win.matchMedia(
+			'(prefers-reduced-motion: reduce)',
+		).matches;
+		const check = doc.createElement('span');
+		check.className = 'jot-palette-confirm';
+		setIcon(check, 'check');
+		btn.appendChild(check);
+		win.requestAnimationFrame(() => check.classList.add('is-visible'));
+		win.setTimeout(() => this.hide(), reducedMotion ? 80 : 280);
 	}
 
 	private makeItem(doc: Document, extraClass: string, off: Offset): HTMLDivElement {

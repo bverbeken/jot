@@ -181,3 +181,41 @@
 	opacity: 0.35;
 	cursor: default;
 }
+
+/* Confirmation check overlay shown briefly inside a tapped sub-arc item
+   before the palette auto-dismisses. */
+.jot-palette-confirm {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--interactive-success, #2ecc71);
+	color: #fff;
+	border-radius: inherit;
+	opacity: 0;
+	transform: scale(0.4);
+	transition:
+		opacity 0.12s ease-out,
+		transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+	pointer-events: none;
+}
+
+.jot-palette-confirm.is-visible {
+	opacity: 1;
+	transform: scale(1);
+}
+
+.jot-palette-confirm svg {
+	width: 60%;
+	height: 60%;
+	stroke: currentColor;
+	stroke-width: 3;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.jot-palette-confirm {
+		transition: opacity 0.06s linear;
+		transform: none;
+	}
+}
