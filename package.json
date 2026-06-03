@@ -1,6 +1,6 @@
 {
 	"name": "jot",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"description": "Handwrite annotations in Obsidian with Apple Pencil.",
 	"main": "main.js",
 	"type": "module",
