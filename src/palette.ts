@@ -230,6 +230,16 @@ export class Palette {
 		if (this.subArc === 'color') this.renderSubColors(host, doc);
 		else if (this.subArc === 'tool') this.renderSubTools(host, doc);
 		else if (this.subArc === 'width') this.renderSubWidths(host, doc);
+
+		this.renderCloseSlot(host, doc);
+	}
+
+	private renderCloseSlot(host: HTMLElement, doc: Document) {
+		const btn = this.makeItem(doc, 'jot-palette-close', this.arcOrigin());
+		setIcon(btn, 'x');
+		btn.setAttribute('aria-label', 'Close palette');
+		btn.addEventListener('click', () => this.hide());
+		host.appendChild(btn);
 	}
 
 	private renderUndoSlot(host: HTMLElement, doc: Document, off: Offset) {
@@ -291,6 +301,7 @@ export class Palette {
 			),
 		);
 		svg.appendChild(mainPath);
+		this.bindDragOnBand(mainPath);
 
 		// Sub band — separate stroked arc at the sub radius, only when a
 		// sub-arc is open.
@@ -309,9 +320,55 @@ export class Palette {
 				),
 			);
 			svg.appendChild(subPath);
+			this.bindDragOnBand(subPath);
 		}
 
 		host.appendChild(svg);
+	}
+
+	// Drag the whole palette by touching/dragging the band background.
+	// Restricted to finger and mouse — the pen is reserved for drawing.
+	private bindDragOnBand(path: SVGPathElement) {
+		let dragging = false;
+		let activeId: number | null = null;
+		let startClientX = 0;
+		let startClientY = 0;
+		let startLeft = 0;
+		let startTop = 0;
+
+		path.addEventListener('pointerdown', (e) => {
+			if (e.pointerType !== 'touch' && e.pointerType !== 'mouse') return;
+			if (!this.element) return;
+			dragging = true;
+			activeId = e.pointerId;
+			startClientX = e.clientX;
+			startClientY = e.clientY;
+			startLeft = parseFloat(this.element.style.left) || 0;
+			startTop = parseFloat(this.element.style.top) || 0;
+			path.setPointerCapture(e.pointerId);
+			e.preventDefault();
+			e.stopPropagation();
+		});
+
+		path.addEventListener('pointermove', (e) => {
+			if (!dragging || e.pointerId !== activeId || !this.element) return;
+			const dx = e.clientX - startClientX;
+			const dy = e.clientY - startClientY;
+			this.element.style.left = `${startLeft + dx}px`;
+			this.element.style.top = `${startTop + dy}px`;
+			e.preventDefault();
+		});
+
+		const endDrag = (e: PointerEvent) => {
+			if (!dragging || e.pointerId !== activeId) return;
+			dragging = false;
+			activeId = null;
+			try { path.releasePointerCapture(e.pointerId); } catch {
+				// already released
+			}
+		};
+		path.addEventListener('pointerup', endDrag);
+		path.addEventListener('pointercancel', endDrag);
 	}
 
 	private renderColorSlot(host: HTMLElement, doc: Document, off: Offset) {

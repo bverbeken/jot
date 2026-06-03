@@ -41,6 +41,16 @@
 	stroke-width: 50;
 	stroke-linecap: round;
 	filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.3));
+	/* The visible band is a drag handle: finger touch (or mouse drag) on
+	   the band moves the whole palette. Pen still passes through to the
+	   page beneath via the canvas underneath. */
+	pointer-events: stroke;
+	cursor: grab;
+	touch-action: none;
+}
+
+.jot-palette-bg path:active {
+	cursor: grabbing;
 }
 
 .jot-palette-item {
@@ -113,6 +123,23 @@
 	border-radius: 50%;
 	background: var(--text-normal, #ddd);
 	pointer-events: none;
+}
+
+.jot-palette-close {
+	width: 30px;
+	height: 30px;
+	border-radius: 50%;
+	background: var(--background-primary, #1e1e1e);
+	color: var(--text-normal, #ddd);
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.jot-palette-close svg {
+	width: 16px;
+	height: 16px;
+	display: block;
+	flex-shrink: 0;
+	stroke: currentColor;
 }
 
 /* Main-arc slot whose sub-arc is currently open — ring it for orientation. */
