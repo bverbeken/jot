@@ -173,6 +173,7 @@ export class Palette {
 		parent.appendChild(el);
 
 		this.element = el;
+		this.bindDrag(el);
 		this.bindOutsideClose(doc);
 	}
 
@@ -218,6 +219,7 @@ export class Palette {
 	}
 
 	private renderItems(host: HTMLElement, doc: Document) {
+		this.renderDragArea(host, doc);
 		this.renderBackground(host, doc);
 
 		this.renderUndoSlot(host, doc, this.mainOffset(UNDO_SLOT_INDEX));
@@ -240,6 +242,18 @@ export class Palette {
 		btn.setAttribute('aria-label', 'Close palette');
 		btn.addEventListener('click', () => this.hide());
 		host.appendChild(btn);
+	}
+
+	// Transparent circular hit-target centered on the arc origin. It sits
+	// behind the items and bands so it picks up taps in the empty space
+	// inside the fan (between bands, around the close button) for drag.
+	private renderDragArea(host: HTMLElement, doc: Document) {
+		const el = doc.createElement('div');
+		el.className = 'jot-palette-drag-area';
+		const origin = this.arcOrigin();
+		el.style.setProperty('--ox', `${origin.ox}px`);
+		el.style.setProperty('--oy', `${origin.oy}px`);
+		host.appendChild(el);
 	}
 
 	private renderUndoSlot(host: HTMLElement, doc: Document, off: Offset) {
@@ -301,7 +315,6 @@ export class Palette {
 			),
 		);
 		svg.appendChild(mainPath);
-		this.bindDragOnBand(mainPath);
 
 		// Sub band — separate stroked arc at the sub radius, only when a
 		// sub-arc is open.
@@ -320,15 +333,17 @@ export class Palette {
 				),
 			);
 			svg.appendChild(subPath);
-			this.bindDragOnBand(subPath);
 		}
 
 		host.appendChild(svg);
 	}
 
-	// Drag the whole palette by touching/dragging the band background.
-	// Restricted to finger and mouse — the pen is reserved for drawing.
-	private bindDragOnBand(path: SVGPathElement) {
+	// Delegated drag handler on the palette container. Touch always drags
+	// (even when starting on an item — the user can finger-pan from anywhere
+	// inside the palette). Mouse drags only when starting outside an item,
+	// so mouse clicks on buttons keep working. Pen is excluded — it's the
+	// drawing instrument.
+	private bindDrag(el: HTMLElement) {
 		let dragging = false;
 		let activeId: number | null = null;
 		let startClientX = 0;
@@ -336,39 +351,50 @@ export class Palette {
 		let startLeft = 0;
 		let startTop = 0;
 
-		path.addEventListener('pointerdown', (e) => {
-			if (e.pointerType !== 'touch' && e.pointerType !== 'mouse') return;
-			if (!this.element) return;
-			dragging = true;
-			activeId = e.pointerId;
-			startClientX = e.clientX;
-			startClientY = e.clientY;
-			startLeft = parseFloat(this.element.style.left) || 0;
-			startTop = parseFloat(this.element.style.top) || 0;
-			path.setPointerCapture(e.pointerId);
-			e.preventDefault();
-			e.stopPropagation();
-		});
+		el.addEventListener(
+			'pointerdown',
+			(e) => {
+				if (e.pointerType === 'pen') return;
+				if (e.pointerType === 'mouse') {
+					const target = e.target as Element | null;
+					if (target?.closest('.jot-palette-item')) return;
+				}
+				dragging = true;
+				activeId = e.pointerId;
+				startClientX = e.clientX;
+				startClientY = e.clientY;
+				startLeft = parseFloat(el.style.left) || 0;
+				startTop = parseFloat(el.style.top) || 0;
+				el.setPointerCapture(e.pointerId);
+				e.preventDefault();
+				e.stopPropagation();
+			},
+			true,
+		);
 
-		path.addEventListener('pointermove', (e) => {
-			if (!dragging || e.pointerId !== activeId || !this.element) return;
-			const dx = e.clientX - startClientX;
-			const dy = e.clientY - startClientY;
-			this.element.style.left = `${startLeft + dx}px`;
-			this.element.style.top = `${startTop + dy}px`;
-			e.preventDefault();
-		});
+		el.addEventListener(
+			'pointermove',
+			(e) => {
+				if (!dragging || e.pointerId !== activeId) return;
+				const dx = e.clientX - startClientX;
+				const dy = e.clientY - startClientY;
+				el.style.left = `${startLeft + dx}px`;
+				el.style.top = `${startTop + dy}px`;
+				e.preventDefault();
+			},
+			true,
+		);
 
 		const endDrag = (e: PointerEvent) => {
 			if (!dragging || e.pointerId !== activeId) return;
 			dragging = false;
 			activeId = null;
-			try { path.releasePointerCapture(e.pointerId); } catch {
+			try { el.releasePointerCapture(e.pointerId); } catch {
 				// already released
 			}
 		};
-		path.addEventListener('pointerup', endDrag);
-		path.addEventListener('pointercancel', endDrag);
+		el.addEventListener('pointerup', endDrag, true);
+		el.addEventListener('pointercancel', endDrag, true);
 	}
 
 	private renderColorSlot(host: HTMLElement, doc: Document, off: Offset) {

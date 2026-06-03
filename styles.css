@@ -18,8 +18,27 @@
 	width: 0;
 	height: 0;
 	z-index: 10000;
-	pointer-events: none;
+	/* pointer-events: auto so the delegated touch-drag handler can capture
+	   pointers on the container. The container itself is zero-size, so this
+	   doesn't accidentally catch events on empty space — only children do. */
+	pointer-events: auto;
 	user-select: none;
+}
+
+/* Transparent hit-target that fills the empty area inside the fan (between
+   the bands and around the close button) so finger touches there start a
+   drag too. Sits behind everything else. */
+.jot-palette-drag-area {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 400px;
+	height: 400px;
+	transform: translate(calc(-50% + var(--ox, 0px)), calc(-50% + var(--oy, 0px)));
+	border-radius: 50%;
+	clip-path: circle(50%);
+	pointer-events: auto;
+	touch-action: none;
 }
 
 .jot-palette-bg {
@@ -126,8 +145,8 @@
 }
 
 .jot-palette-close {
-	width: 30px;
-	height: 30px;
+	width: 40px;
+	height: 40px;
 	border-radius: 50%;
 	background: var(--background-primary, #1e1e1e);
 	color: var(--text-normal, #ddd);
@@ -135,8 +154,8 @@
 }
 
 .jot-palette-close svg {
-	width: 16px;
-	height: 16px;
+	width: 20px;
+	height: 20px;
 	display: block;
 	flex-shrink: 0;
 	stroke: currentColor;
