@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-ink",
-	"version": "0.0.1",
+	"version": "0.0.2",
 	"description": "Handwrite PDF annotations in Obsidian with Apple Pencil.",
 	"main": "main.js",
 	"type": "module",
