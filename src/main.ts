@@ -33,6 +33,11 @@ const HIGHLIGHTER_WIDTH_FACTOR = 4;
 // with natural jitter, so 5 px almost always tripped before the timer fired.
 const LONG_PRESS_MS = 300;
 const LONG_PRESS_MOVE_PX = 15;
+// Two-finger stationary hold as an alternative palette trigger — useful when
+// the pen isn't in the user's hand. More generous movement tolerance than
+// the pen because fingers are less precise.
+const TWO_FINGER_HOLD_MS = 300;
+const TWO_FINGER_MOVE_PX = 25;
 // Whole-stroke eraser hit radius, as a fraction of page height.
 const ERASE_RADIUS = 0.02;
 // Per-PDF cap on the undo stack so a long session can't unbound memory.
@@ -403,11 +408,26 @@ export default class JotPlugin extends Plugin {
 		let downPoint: { clientX: number; clientY: number } | null = null;
 		let longPressTimer: number | null = null;
 		let activePointerId: number | null = null;
+		// Finger tracker for the two-finger hold gesture. Keyed by pointerId.
+		const activeTouches = new Map<number, {
+			clientX: number;
+			clientY: number;
+			downX: number;
+			downY: number;
+		}>();
+		let twoFingerTimer: number | null = null;
 
 		const cancelLongPress = () => {
 			if (longPressTimer !== null) {
 				window.clearTimeout(longPressTimer);
 				longPressTimer = null;
+			}
+		};
+
+		const cancelTwoFinger = () => {
+			if (twoFingerTimer !== null) {
+				window.clearTimeout(twoFingerTimer);
+				twoFingerTimer = null;
 			}
 		};
 
@@ -421,8 +441,43 @@ export default class JotPlugin extends Plugin {
 		};
 
 		canvas.addEventListener('pointerdown', (e) => {
+			// Finger touch: track for the two-finger-hold gesture, otherwise
+			// pass through so it can scroll the PDF view underneath.
+			if (e.pointerType === 'touch') {
+				activeTouches.set(e.pointerId, {
+					clientX: e.clientX,
+					clientY: e.clientY,
+					downX: e.clientX,
+					downY: e.clientY,
+				});
+				cancelTwoFinger();
+				if (
+					activeTouches.size === 2 &&
+					!this.palette.isOpen() &&
+					inProgress === null &&
+					!eraserActive
+				) {
+					twoFingerTimer = window.setTimeout(() => {
+						twoFingerTimer = null;
+						if (activeTouches.size !== 2) return;
+						if (this.palette.isOpen()) return;
+						const pts = [...activeTouches.values()];
+						const p0 = pts[0];
+						const p1 = pts[1];
+						if (!p0 || !p1) return;
+						const cx = (p0.clientX + p1.clientX) / 2;
+						const cy = (p0.clientY + p1.clientY) / 2;
+						this.palette.show(
+							activeDocument.body,
+							cx,
+							cy,
+							this.settings.handedness,
+						);
+					}, TWO_FINGER_HOLD_MS);
+				}
+				return;
+			}
 			// Pen always draws (Apple Pencil), mouse draws for desktop testing.
-			// Finger touch is ignored so it can scroll the PDF view underneath.
 			if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return;
 			// If the palette is up, a tap on the canvas is the outside-close
 			// gesture; don't also start a stroke.
@@ -473,6 +528,23 @@ export default class JotPlugin extends Plugin {
 		});
 
 		canvas.addEventListener('pointermove', (e) => {
+			if (e.pointerType === 'touch') {
+				const t = activeTouches.get(e.pointerId);
+				if (!t) return;
+				t.clientX = e.clientX;
+				t.clientY = e.clientY;
+				if (twoFingerTimer !== null) {
+					const dx = e.clientX - t.downX;
+					const dy = e.clientY - t.downY;
+					if (
+						dx * dx + dy * dy >
+						TWO_FINGER_MOVE_PX * TWO_FINGER_MOVE_PX
+					) {
+						cancelTwoFinger();
+					}
+				}
+				return;
+			}
 			if (longPressTimer !== null && downPoint) {
 				const dx = e.clientX - downPoint.clientX;
 				const dy = e.clientY - downPoint.clientY;
@@ -519,6 +591,11 @@ export default class JotPlugin extends Plugin {
 		});
 
 		const finish = (e: PointerEvent) => {
+			if (e.pointerType === 'touch') {
+				activeTouches.delete(e.pointerId);
+				if (activeTouches.size < 2) cancelTwoFinger();
+				return;
+			}
 			cancelLongPress();
 			downPoint = null;
 			activePointerId = null;
