@@ -758,15 +758,20 @@ export default class JotPlugin extends Plugin {
 			new Notice('Jot: no notes on this PDF to merge.');
 			return;
 		}
-		new ExportChoiceModal(this.app, pdfPath, (choice) => {
+		const copyTarget = await this.uniqueAnnotatedPath(pdfPath);
+		new ExportChoiceModal(this.app, copyTarget, (choice) => {
 			if (choice === 'cancel') return;
-			void this.runMerge(pdfPath, choice);
+			void this.runMerge(pdfPath, choice, copyTarget);
 		}).open();
 	}
 
-	private async runMerge(pdfPath: string, choice: 'overwrite' | 'copy') {
+	private async runMerge(
+		pdfPath: string,
+		choice: 'overwrite' | 'copy',
+		copyTarget: string,
+	) {
 		try {
-			const outPath = await this.doMerge(pdfPath, choice);
+			const outPath = await this.doMerge(pdfPath, choice, copyTarget);
 			if (choice === 'overwrite') {
 				await this.discardSidecar(pdfPath);
 			}
@@ -790,6 +795,7 @@ export default class JotPlugin extends Plugin {
 	private async doMerge(
 		pdfPath: string,
 		choice: 'overwrite' | 'copy',
+		copyTarget: string,
 	): Promise<string> {
 		const bytes = await this.app.vault.adapter.readBinary(pdfPath);
 		const pdfDoc = await PDFDocument.load(bytes);
@@ -803,12 +809,20 @@ export default class JotPlugin extends Plugin {
 			drawStrokesOnPdfPage(page, strokes);
 		}
 		const out = await pdfDoc.save();
-		const outPath =
-			choice === 'overwrite'
-				? pdfPath
-				: pdfPath.replace(/\.pdf$/i, '.annotated.pdf');
+		const outPath = choice === 'overwrite' ? pdfPath : copyTarget;
 		await this.app.vault.adapter.writeBinary(outPath, out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer);
 		return outPath;
+	}
+
+	private async uniqueAnnotatedPath(pdfPath: string): Promise<string> {
+		const base = pdfPath.replace(/\.pdf$/i, '.annotated');
+		let candidate = `${base}.pdf`;
+		let n = 2;
+		while (await this.app.vault.adapter.exists(candidate)) {
+			candidate = `${base}.${n}.pdf`;
+			n++;
+		}
+		return candidate;
 	}
 
 	private async discardSidecar(pdfPath: string) {
@@ -1018,15 +1032,15 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 
 class ExportChoiceModal extends Modal {
 	private onChoice: (choice: 'overwrite' | 'copy' | 'cancel') => void;
-	private pdfPath: string;
+	private copyTarget: string;
 
 	constructor(
 		app: App,
-		pdfPath: string,
+		copyTarget: string,
 		onChoice: (choice: 'overwrite' | 'copy' | 'cancel') => void,
 	) {
 		super(app);
-		this.pdfPath = pdfPath;
+		this.copyTarget = copyTarget;
 		this.onChoice = onChoice;
 	}
 
@@ -1037,9 +1051,7 @@ class ExportChoiceModal extends Modal {
 		contentEl.createEl('p', {
 			text: 'Bake the strokes for this PDF into a PDF file. The sidecar .ink.json is dropped only if you overwrite the original.',
 		});
-		const annotatedName = this.pdfPath
-			.replace(/.*\//, '')
-			.replace(/\.pdf$/i, '.annotated.pdf');
+		const annotatedName = this.copyTarget.replace(/.*\//, '');
 		const buttons = contentEl.createDiv({ cls: 'jot-modal-buttons' });
 		const copyBtn = buttons.createEl('button', {
 			text: `Save as "${annotatedName}"`,
