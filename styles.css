@@ -12,3 +12,100 @@
 .jot-passthrough {
 	pointer-events: none;
 }
+
+.jot-palette {
+	position: fixed;
+	width: 0;
+	height: 0;
+	z-index: 10000;
+	pointer-events: none;
+	user-select: none;
+}
+
+.jot-palette-bg {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 520px;
+	height: 520px;
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+	overflow: visible;
+}
+
+.jot-palette-bg path {
+	fill: var(--background-secondary, #2a2a2a);
+	fill-opacity: 0.96;
+	stroke: rgba(0, 0, 0, 0.18);
+	stroke-width: 1;
+	filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.35));
+}
+
+.jot-palette-item {
+	all: unset;
+	position: absolute;
+	left: 0;
+	top: 0;
+	transform: translate(calc(-50% + var(--ox, 0px)), calc(-50% + var(--oy, 0px)));
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	cursor: pointer;
+	pointer-events: auto;
+	touch-action: none;
+	transition: transform 0.08s ease-out;
+}
+
+.jot-palette-item:active {
+	transform: translate(calc(-50% + var(--ox, 0px)), calc(-50% + var(--oy, 0px))) scale(0.92);
+}
+
+.jot-palette-color {
+	width: 30px;
+	height: 30px;
+	border-radius: 50%;
+	border: 2px solid rgba(0, 0, 0, 0.2);
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.jot-palette-tool {
+	width: 40px;
+	height: 40px;
+	border-radius: 50%;
+	background: var(--background-primary, #1e1e1e);
+	color: var(--text-normal, #ddd);
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.jot-palette-tool svg {
+	width: 20px;
+	height: 20px;
+}
+
+.jot-palette-tool.is-active {
+	background: var(--text-accent, #7a5cff);
+	color: var(--text-on-accent, #fff);
+}
+
+.jot-palette-width {
+	width: 34px;
+	height: 34px;
+	border-radius: 50%;
+	background: var(--background-primary, #1e1e1e);
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.jot-palette-width-dot {
+	display: block;
+	border-radius: 50%;
+	background: var(--text-normal, #ddd);
+	pointer-events: none;
+}
+
+/* Main-arc slot whose sub-arc is currently open — ring it for orientation. */
+.jot-palette-slot.is-open {
+	box-shadow:
+		0 0 0 3px var(--text-accent, #7a5cff),
+		0 1px 3px rgba(0, 0, 0, 0.35);
+}

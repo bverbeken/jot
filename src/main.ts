@@ -1,4 +1,15 @@
-import { Plugin, TFile, WorkspaceLeaf } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf } from 'obsidian';
+import { DEFAULT_TOOL_STATE, Palette, Tool, ToolState } from './palette';
+
+export type Handedness = 'right' | 'left';
+
+interface JotSettings {
+	handedness: Handedness;
+}
+
+const DEFAULT_SETTINGS: JotSettings = {
+	handedness: 'right',
+};
 
 const PLUGIN_LOG = '[jot]';
 const OVERLAY_CLASS = 'jot-overlay';
@@ -6,19 +17,25 @@ const PAGE_ANCHOR_CLASS = 'jot-page-anchor';
 const PASSTHROUGH_CLASS = 'jot-passthrough';
 const OVERLAY_KEY_ATTR = 'data-jot-key';
 const PAGE_OBSERVED_ATTR = 'data-jot-observed';
-const STROKE_COLOR = '#d33';
-// Stroke width as a fraction of the page's rendered height — keeps lines
-// looking the same thickness relative to the PDF at any zoom level.
-const STROKE_WIDTH = 0.0025;
 // Pressure (0..1) scales the per-segment width by this factor range. The
 // floor keeps a barely-touching stroke visible; the ceiling gives a clear
 // heavy-press marker. Mouse input reports pressure 0.5 (button down), which
 // lands near the middle of the range, so desktop testing looks normal.
 const PRESSURE_MIN_FACTOR = 0.5;
 const PRESSURE_MAX_FACTOR = 1.8;
+const HIGHLIGHTER_ALPHA = 0.35;
+// Highlighter strokes render at this multiple of the chosen pen width so the
+// thinnest preset still looks like a marker, not a thick pen line.
+const HIGHLIGHTER_WIDTH_FACTOR = 4;
+// Stationary press duration before the palette pops, and the movement
+// tolerance for what counts as "stationary" in screen pixels.
+const LONG_PRESS_MS = 300;
+const LONG_PRESS_MOVE_PX = 5;
+// Whole-stroke eraser hit radius, as a fraction of page height.
+const ERASE_RADIUS = 0.02;
 const INK_SUFFIX = '.ink.json';
 const SAVE_DEBOUNCE_MS = 250;
-const INK_FORMAT_VERSION = 1;
+const INK_FORMAT_VERSION = 2;
 
 interface InkFileFormat {
 	version: number;
@@ -35,6 +52,7 @@ interface Stroke {
 	points: NormalizedPoint[];
 	color: string;
 	width: number;
+	tool: Tool;
 }
 
 const pageKey = (filePath: string, pageNumber: number) =>
@@ -51,8 +69,17 @@ export default class JotPlugin extends Plugin {
 	private strokes = new Map<string, Stroke[]>();
 	private loaded = new Set<string>();
 	private saveTimers = new Map<string, number>();
+	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
+	private palette!: Palette;
+	settings: JotSettings = { ...DEFAULT_SETTINGS };
 
 	async onload() {
+		await this.loadSettings();
+		this.addSettingTab(new JotSettingTab(this.app, this));
+		this.palette = new Palette(this.toolState, (state) => {
+			this.toolState = state;
+		});
+
 		this.registerEvent(
 			this.app.workspace.on('file-open', async (file: TFile | null) => {
 				if (file?.extension !== 'pdf') return;
@@ -82,6 +109,7 @@ export default class JotPlugin extends Plugin {
 		this.containerObservers.clear();
 		this.saveTimers.forEach((id) => window.clearTimeout(id));
 		this.saveTimers.clear();
+		this.palette?.hide();
 	}
 
 	private inkPathFor(pdfPath: string): string {
@@ -100,7 +128,7 @@ export default class JotPlugin extends Plugin {
 			if (!(await this.app.vault.adapter.exists(path))) return;
 			const text = await this.app.vault.adapter.read(path);
 			const parsed = JSON.parse(text) as InkFileFormat;
-			if (parsed.version !== INK_FORMAT_VERSION) {
+			if (parsed.version !== INK_FORMAT_VERSION && parsed.version !== 1) {
 				console.warn(
 					`${PLUGIN_LOG} ${path} has unknown version ${parsed.version}, skipping`,
 				);
@@ -109,7 +137,17 @@ export default class JotPlugin extends Plugin {
 			for (const [pageNumStr, strokes] of Object.entries(parsed.pages)) {
 				const pageNumber = parseInt(pageNumStr, 10);
 				if (Number.isNaN(pageNumber)) continue;
-				this.strokes.set(pageKey(pdfPath, pageNumber), strokes);
+				// v1 strokes have no `tool` field — treat them as pen.
+				const upgraded: Stroke[] = strokes.map((s) => {
+					const legacy = s as Partial<Stroke>;
+					return {
+						points: s.points,
+						color: s.color,
+						width: s.width,
+						tool: legacy.tool ?? 'pen',
+					};
+				});
+				this.strokes.set(pageKey(pdfPath, pageNumber), upgraded);
 			}
 		} catch (err) {
 			console.error(`${PLUGIN_LOG} loadFromDisk failed for ${path}:`, err);
@@ -344,6 +382,17 @@ export default class JotPlugin extends Plugin {
 		canvas.addEventListener('touchmove', blockStylusGesture, { passive: false });
 
 		let inProgress: NormalizedPoint[] | null = null;
+		let eraserActive = false;
+		let downPoint: { clientX: number; clientY: number } | null = null;
+		let longPressTimer: number | null = null;
+		let activePointerId: number | null = null;
+
+		const cancelLongPress = () => {
+			if (longPressTimer !== null) {
+				window.clearTimeout(longPressTimer);
+				longPressTimer = null;
+			}
+		};
 
 		const toNormalized = (e: PointerEvent): NormalizedPoint => {
 			const rect = canvas.getBoundingClientRect();
@@ -358,37 +407,118 @@ export default class JotPlugin extends Plugin {
 			// Pen always draws (Apple Pencil), mouse draws for desktop testing.
 			// Finger touch is ignored so it can scroll the PDF view underneath.
 			if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return;
+			// If the palette is up, a tap on the canvas is the outside-close
+			// gesture; don't also start a stroke.
+			if (this.palette.isOpen()) return;
 			canvas.setPointerCapture(e.pointerId);
-			inProgress = [toNormalized(e)];
+			activePointerId = e.pointerId;
+			downPoint = { clientX: e.clientX, clientY: e.clientY };
+
+			if (this.toolState.tool === 'eraser') {
+				// Defer the first erase to pointermove so a stationary press
+				// opens the palette without destroying a stroke first.
+				eraserActive = true;
+			} else {
+				inProgress = [toNormalized(e)];
+			}
+
+			cancelLongPress();
+			const openX = e.clientX;
+			const openY = e.clientY;
+			longPressTimer = window.setTimeout(() => {
+				longPressTimer = null;
+				// Stationary hold: abandon any in-progress stroke, wipe any
+				// sub-threshold ink that landed, and pop the palette.
+				inProgress = null;
+				eraserActive = false;
+				this.redrawPage(canvas);
+				if (activePointerId !== null) {
+					try { canvas.releasePointerCapture(activePointerId); } catch {
+						// already released — safe to ignore
+					}
+					activePointerId = null;
+				}
+				this.palette.show(activeDocument.body, openX, openY, this.settings.handedness);
+			}, LONG_PRESS_MS);
 			e.preventDefault();
 		});
 
 		canvas.addEventListener('pointermove', (e) => {
+			if (longPressTimer !== null && downPoint) {
+				const dx = e.clientX - downPoint.clientX;
+				const dy = e.clientY - downPoint.clientY;
+				if (dx * dx + dy * dy > LONG_PRESS_MOVE_PX * LONG_PRESS_MOVE_PX) {
+					cancelLongPress();
+				}
+			}
+			if (eraserActive) {
+				this.eraseAt(canvas, e);
+				e.preventDefault();
+				return;
+			}
 			if (!inProgress) return;
 			const prev = inProgress[inProgress.length - 1];
 			if (!prev) return;
 			const p = toNormalized(e);
 			inProgress.push(p);
-			drawSegment(ctx, prev, p, STROKE_COLOR, STROKE_WIDTH, canvas.width, canvas.height);
+			if (this.toolState.tool === 'highlighter') {
+				// Highlighter must avoid the per-segment alpha-overlap beading.
+				// Cheapest correct approach: redraw the page and repaint the
+				// in-progress points as one continuous polyline each move.
+				this.redrawPage(canvas);
+				drawHighlighterPolyline(
+					ctx,
+					inProgress,
+					this.toolState.color,
+					this.toolState.width,
+					canvas.width,
+					canvas.height,
+				);
+			} else {
+				drawSegment(
+					ctx,
+					prev,
+					p,
+					this.toolState.tool,
+					this.toolState.color,
+					this.toolState.width,
+					canvas.width,
+					canvas.height,
+				);
+			}
 			e.preventDefault();
 		});
 
 		const finish = (e: PointerEvent) => {
-			if (!inProgress) return;
-			const stroke: Stroke = {
-				points: inProgress,
-				color: STROKE_COLOR,
-				width: STROKE_WIDTH,
-			};
-			const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
-			if (key) {
-				const existing = this.strokes.get(key) ?? [];
-				existing.push(stroke);
-				this.strokes.set(key, existing);
-				const pdfPath = filePathFromKey(key);
-				if (pdfPath) this.scheduleSave(pdfPath);
+			cancelLongPress();
+			downPoint = null;
+			activePointerId = null;
+			if (eraserActive) {
+				eraserActive = false;
+				try {
+					canvas.releasePointerCapture(e.pointerId);
+				} catch {
+					// already released
+				}
+				return;
 			}
-			inProgress = null;
+			if (inProgress) {
+				const stroke: Stroke = {
+					points: inProgress,
+					color: this.toolState.color,
+					width: this.toolState.width,
+					tool: this.toolState.tool,
+				};
+				const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
+				if (key) {
+					const existing = this.strokes.get(key) ?? [];
+					existing.push(stroke);
+					this.strokes.set(key, existing);
+					const pdfPath = filePathFromKey(key);
+					if (pdfPath) this.scheduleSave(pdfPath);
+				}
+				inProgress = null;
+			}
 			try {
 				canvas.releasePointerCapture(e.pointerId);
 			} catch {
@@ -404,6 +534,39 @@ export default class JotPlugin extends Plugin {
 		canvas.addEventListener('pointerup', finish);
 		canvas.addEventListener('pointercancel', finish);
 	}
+
+	async loadSettings() {
+		const stored = (await this.loadData()) as Partial<JotSettings> | null;
+		this.settings = { ...DEFAULT_SETTINGS, ...(stored ?? {}) };
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
+	}
+
+	private eraseAt(canvas: HTMLCanvasElement, e: PointerEvent) {
+		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
+		if (!key) return;
+		const strokes = this.strokes.get(key);
+		if (!strokes || strokes.length === 0) return;
+		const rect = canvas.getBoundingClientRect();
+		const x = (e.clientX - rect.left) / rect.width;
+		const y = (e.clientY - rect.top) / rect.height;
+		const kept: Stroke[] = [];
+		let removed = 0;
+		for (const stroke of strokes) {
+			if (strokeIntersects(stroke, x, y, ERASE_RADIUS)) {
+				removed += 1;
+			} else {
+				kept.push(stroke);
+			}
+		}
+		if (removed === 0) return;
+		this.strokes.set(key, kept);
+		this.redrawPage(canvas);
+		const pdfPath = filePathFromKey(key);
+		if (pdfPath) this.scheduleSave(pdfPath);
+	}
 }
 
 function widthFactorForPressure(pressure: number): number {
@@ -415,6 +578,7 @@ function drawSegment(
 	ctx: CanvasRenderingContext2D,
 	a: NormalizedPoint,
 	b: NormalizedPoint,
+	_tool: Tool,
 	color: string,
 	baseWidth: number,
 	canvasWidth: number,
@@ -431,17 +595,113 @@ function drawSegment(
 	ctx.stroke();
 }
 
+function drawHighlighterPolyline(
+	ctx: CanvasRenderingContext2D,
+	points: NormalizedPoint[],
+	color: string,
+	baseWidth: number,
+	canvasWidth: number,
+	canvasHeight: number,
+) {
+	if (points.length < 2) return;
+	ctx.save();
+	ctx.lineWidth = baseWidth * HIGHLIGHTER_WIDTH_FACTOR * canvasHeight;
+	ctx.strokeStyle = color;
+	ctx.lineCap = 'butt';
+	ctx.lineJoin = 'round';
+	ctx.globalAlpha = HIGHLIGHTER_ALPHA;
+	ctx.beginPath();
+	const first = points[0];
+	if (!first) {
+		ctx.restore();
+		return;
+	}
+	ctx.moveTo(first.x * canvasWidth, first.y * canvasHeight);
+	for (let i = 1; i < points.length; i++) {
+		const p = points[i];
+		if (!p) continue;
+		ctx.lineTo(p.x * canvasWidth, p.y * canvasHeight);
+	}
+	ctx.stroke();
+	ctx.restore();
+}
+
 function drawStroke(
 	ctx: CanvasRenderingContext2D,
 	stroke: Stroke,
 	width: number,
 	height: number,
 ) {
+	if (stroke.tool === 'highlighter') {
+		drawHighlighterPolyline(
+			ctx,
+			stroke.points,
+			stroke.color,
+			stroke.width,
+			width,
+			height,
+		);
+		return;
+	}
 	let prev: NormalizedPoint | null = null;
 	for (const p of stroke.points) {
 		if (prev) {
-			drawSegment(ctx, prev, p, stroke.color, stroke.width, width, height);
+			drawSegment(
+				ctx,
+				prev,
+				p,
+				stroke.tool,
+				stroke.color,
+				stroke.width,
+				width,
+				height,
+			);
 		}
 		prev = p;
+	}
+}
+
+function strokeIntersects(
+	stroke: Stroke,
+	x: number,
+	y: number,
+	r: number,
+): boolean {
+	const r2 = r * r;
+	for (const p of stroke.points) {
+		const dx = p.x - x;
+		const dy = p.y - y;
+		if (dx * dx + dy * dy < r2) return true;
+	}
+	return false;
+}
+
+class JotSettingTab extends PluginSettingTab {
+	plugin: JotPlugin;
+
+	constructor(app: App, plugin: JotPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
+
+	display() {
+		const { containerEl } = this;
+		containerEl.empty();
+
+		new Setting(containerEl)
+			.setName('Handedness')
+			.setDesc(
+				'The palette fans away from your pen hand so it doesn\'t sit under your wrist.',
+			)
+			.addDropdown((d) =>
+				d
+					.addOption('right', 'Right-handed')
+					.addOption('left', 'Left-handed')
+					.setValue(this.plugin.settings.handedness)
+					.onChange(async (value) => {
+						this.plugin.settings.handedness = value as Handedness;
+						await this.plugin.saveSettings();
+					}),
+			);
 	}
 }
