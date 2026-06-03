@@ -35,6 +35,8 @@ const LONG_PRESS_MS = 300;
 const LONG_PRESS_MOVE_PX = 15;
 // Whole-stroke eraser hit radius, as a fraction of page height.
 const ERASE_RADIUS = 0.02;
+// Per-PDF cap on the undo stack so a long session can't unbound memory.
+const MAX_UNDO_DEPTH = 50;
 const INK_SUFFIX = '.ink.json';
 const SAVE_DEBOUNCE_MS = 250;
 const INK_FORMAT_VERSION = 2;
@@ -74,13 +76,24 @@ export default class JotPlugin extends Plugin {
 	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
 	private palette!: Palette;
 	settings: JotSettings = { ...DEFAULT_SETTINGS };
+	private undoStacks = new Map<string, UndoEntry[]>();
+	private redoStacks = new Map<string, UndoEntry[]>();
 
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new JotSettingTab(this.app, this));
-		this.palette = new Palette(this.toolState, (state) => {
-			this.toolState = state;
-		});
+		this.palette = new Palette(
+			this.toolState,
+			(state) => {
+				this.toolState = state;
+			},
+			{
+				onUndo: () => this.undoActivePdf(),
+				onRedo: () => this.redoActivePdf(),
+				canUndo: () => this.canUndoActivePdf(),
+				canRedo: () => this.canRedoActivePdf(),
+			},
+		);
 
 		this.registerEvent(
 			this.app.workspace.on('file-open', async (file: TFile | null) => {
@@ -385,6 +398,8 @@ export default class JotPlugin extends Plugin {
 
 		let inProgress: NormalizedPoint[] | null = null;
 		let eraserActive = false;
+		let eraseSnapshot: UndoEntry | null = null;
+		let eraseTouched = false;
 		let downPoint: { clientX: number; clientY: number } | null = null;
 		let longPressTimer: number | null = null;
 		let activePointerId: number | null = null;
@@ -420,6 +435,16 @@ export default class JotPlugin extends Plugin {
 				// Defer the first erase to pointermove so a stationary press
 				// opens the palette without destroying a stroke first.
 				eraserActive = true;
+				eraseTouched = false;
+				const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
+				const pdfPath = key ? filePathFromKey(key) : null;
+				if (key && pdfPath) {
+					eraseSnapshot = {
+						pdfPath,
+						key,
+						prevStrokes: [...(this.strokes.get(key) ?? [])],
+					};
+				}
 			} else {
 				inProgress = [toNormalized(e)];
 			}
@@ -433,6 +458,8 @@ export default class JotPlugin extends Plugin {
 				// sub-threshold ink that landed, and pop the palette.
 				inProgress = null;
 				eraserActive = false;
+				eraseSnapshot = null;
+				eraseTouched = false;
 				this.redrawPage(canvas);
 				if (activePointerId !== null) {
 					try { canvas.releasePointerCapture(activePointerId); } catch {
@@ -454,7 +481,7 @@ export default class JotPlugin extends Plugin {
 				}
 			}
 			if (eraserActive) {
-				this.eraseAt(canvas, e);
+				if (this.eraseAt(canvas, e)) eraseTouched = true;
 				e.preventDefault();
 				return;
 			}
@@ -497,6 +524,11 @@ export default class JotPlugin extends Plugin {
 			activePointerId = null;
 			if (eraserActive) {
 				eraserActive = false;
+				if (eraseTouched && eraseSnapshot) {
+					this.pushUndo(eraseSnapshot);
+				}
+				eraseSnapshot = null;
+				eraseTouched = false;
 				try {
 					canvas.releasePointerCapture(e.pointerId);
 				} catch {
@@ -514,9 +546,12 @@ export default class JotPlugin extends Plugin {
 				const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
 				if (key) {
 					const existing = this.strokes.get(key) ?? [];
+					const pdfPath = filePathFromKey(key);
+					if (pdfPath) {
+						this.pushUndo({ pdfPath, key, prevStrokes: [...existing] });
+					}
 					existing.push(stroke);
 					this.strokes.set(key, existing);
-					const pdfPath = filePathFromKey(key);
 					if (pdfPath) this.scheduleSave(pdfPath);
 				}
 				inProgress = null;
@@ -546,11 +581,11 @@ export default class JotPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	private eraseAt(canvas: HTMLCanvasElement, e: PointerEvent) {
+	private eraseAt(canvas: HTMLCanvasElement, e: PointerEvent): boolean {
 		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
-		if (!key) return;
+		if (!key) return false;
 		const strokes = this.strokes.get(key);
-		if (!strokes || strokes.length === 0) return;
+		if (!strokes || strokes.length === 0) return false;
 		const rect = canvas.getBoundingClientRect();
 		const x = (e.clientX - rect.left) / rect.width;
 		const y = (e.clientY - rect.top) / rect.height;
@@ -563,12 +598,85 @@ export default class JotPlugin extends Plugin {
 				kept.push(stroke);
 			}
 		}
-		if (removed === 0) return;
+		if (removed === 0) return false;
 		this.strokes.set(key, kept);
 		this.redrawPage(canvas);
 		const pdfPath = filePathFromKey(key);
 		if (pdfPath) this.scheduleSave(pdfPath);
+		return true;
 	}
+
+	private pushUndo(entry: UndoEntry) {
+		const stack = this.undoStacks.get(entry.pdfPath) ?? [];
+		stack.push(entry);
+		if (stack.length > MAX_UNDO_DEPTH) stack.shift();
+		this.undoStacks.set(entry.pdfPath, stack);
+		// A fresh edit invalidates any forward history.
+		this.redoStacks.delete(entry.pdfPath);
+	}
+
+	canUndoActivePdf(): boolean {
+		const path = this.getActivePdfFilePath();
+		if (!path) return false;
+		return (this.undoStacks.get(path)?.length ?? 0) > 0;
+	}
+
+	canRedoActivePdf(): boolean {
+		const path = this.getActivePdfFilePath();
+		if (!path) return false;
+		return (this.redoStacks.get(path)?.length ?? 0) > 0;
+	}
+
+	undoActivePdf() {
+		const path = this.getActivePdfFilePath();
+		if (!path) return;
+		const stack = this.undoStacks.get(path);
+		if (!stack || stack.length === 0) return;
+		const entry = stack.pop();
+		if (!entry) return;
+		this.undoStacks.set(path, stack);
+		const current = this.strokes.get(entry.key) ?? [];
+		const redoStack = this.redoStacks.get(path) ?? [];
+		redoStack.push({ pdfPath: path, key: entry.key, prevStrokes: [...current] });
+		this.redoStacks.set(path, redoStack);
+		this.strokes.set(entry.key, [...entry.prevStrokes]);
+		const canvas = this.overlayForKey(entry.key);
+		if (canvas) this.redrawPage(canvas);
+		this.scheduleSave(path);
+	}
+
+	redoActivePdf() {
+		const path = this.getActivePdfFilePath();
+		if (!path) return;
+		const stack = this.redoStacks.get(path);
+		if (!stack || stack.length === 0) return;
+		const entry = stack.pop();
+		if (!entry) return;
+		this.redoStacks.set(path, stack);
+		const current = this.strokes.get(entry.key) ?? [];
+		const undoStack = this.undoStacks.get(path) ?? [];
+		undoStack.push({ pdfPath: path, key: entry.key, prevStrokes: [...current] });
+		this.undoStacks.set(path, undoStack);
+		this.strokes.set(entry.key, [...entry.prevStrokes]);
+		const canvas = this.overlayForKey(entry.key);
+		if (canvas) this.redrawPage(canvas);
+		this.scheduleSave(path);
+	}
+
+	private overlayForKey(key: string): HTMLCanvasElement | null {
+		const leaf = this.getActivePdfLeaf();
+		if (!leaf) return null;
+		const escaped = key.replace(/["\\]/g, '\\$&');
+		return leaf.view.containerEl.querySelector<HTMLCanvasElement>(
+			`canvas.${OVERLAY_CLASS}[${OVERLAY_KEY_ATTR}="${escaped}"]`,
+		);
+	}
+}
+
+interface UndoEntry {
+	pdfPath: string;
+	key: string;
+	prevStrokes: Stroke[];
 }
 
 function widthFactorForPressure(pressure: number): number {

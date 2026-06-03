@@ -46,7 +46,7 @@ const ANCHOR_OFFSET_PX = 60;
 
 // Each main-arc item occupies this much arc.
 const ITEM_ANGULAR_DEG = 24;
-const MAIN_ITEM_COUNT = 4;
+const MAIN_ITEM_COUNT = 6;
 const MAIN_ITEM_STEP_RAD = (ITEM_ANGULAR_DEG * Math.PI) / 180;
 // Sub-arc step is chosen so adjacent sub items sit the same chord distance
 // apart as adjacent main items — equal visual gap on both tiers despite the
@@ -59,10 +59,12 @@ const SUB_ITEM_STEP_RAD =
 	);
 
 // Left-to-right slot indexes on the main arc.
-const TOOL_SLOT_INDEX = 0;
-const ERASER_SLOT_INDEX = 1;
-const WIDTH_SLOT_INDEX = 2;
-const COLOR_SLOT_INDEX = 3;
+const UNDO_SLOT_INDEX = 0;
+const REDO_SLOT_INDEX = 1;
+const TOOL_SLOT_INDEX = 2;
+const ERASER_SLOT_INDEX = 3;
+const WIDTH_SLOT_INDEX = 4;
+const COLOR_SLOT_INDEX = 5;
 
 // Tilt away from the pen hand: 20° off straight up.
 const TILT_OFFSET_DEG = 20;
@@ -75,6 +77,13 @@ const SVG_HALF = 280;
 
 type OnChange = (state: ToolState) => void;
 type SubArc = 'color' | 'tool' | 'width' | null;
+
+export interface PaletteHooks {
+	onUndo: () => void;
+	onRedo: () => void;
+	canUndo: () => boolean;
+	canRedo: () => boolean;
+}
 
 const SUB_SLOT_OF: Record<Exclude<SubArc, null>, number> = {
 	color: COLOR_SLOT_INDEX,
@@ -117,6 +126,7 @@ export class Palette {
 	private outsideDoc: Document | null = null;
 	private state: ToolState;
 	private onChange: OnChange;
+	private hooks: PaletteHooks;
 	private flipDown = false;
 	private subArc: SubArc = null;
 	private handedness: Handedness = 'right';
@@ -125,9 +135,10 @@ export class Palette {
 	// back to drawing is one tap, not two.
 	private lastDrawingTool: Exclude<Tool, 'eraser'> = 'pen';
 
-	constructor(initial: ToolState, onChange: OnChange) {
+	constructor(initial: ToolState, onChange: OnChange, hooks: PaletteHooks) {
 		this.state = { ...initial };
 		this.onChange = onChange;
+		this.hooks = hooks;
 		if (initial.tool === 'pen' || initial.tool === 'highlighter') {
 			this.lastDrawingTool = initial.tool;
 		}
@@ -209,6 +220,8 @@ export class Palette {
 	private renderItems(host: HTMLElement, doc: Document) {
 		this.renderBackground(host, doc);
 
+		this.renderUndoSlot(host, doc, this.mainOffset(UNDO_SLOT_INDEX));
+		this.renderRedoSlot(host, doc, this.mainOffset(REDO_SLOT_INDEX));
 		this.renderToolSlot(host, doc, this.mainOffset(TOOL_SLOT_INDEX));
 		this.renderEraserSlot(host, doc, this.mainOffset(ERASER_SLOT_INDEX));
 		this.renderWidthSlot(host, doc, this.mainOffset(WIDTH_SLOT_INDEX));
@@ -217,6 +230,34 @@ export class Palette {
 		if (this.subArc === 'color') this.renderSubColors(host, doc);
 		else if (this.subArc === 'tool') this.renderSubTools(host, doc);
 		else if (this.subArc === 'width') this.renderSubWidths(host, doc);
+	}
+
+	private renderUndoSlot(host: HTMLElement, doc: Document, off: Offset) {
+		const btn = this.makeItem(doc, 'jot-palette-tool', off);
+		setIcon(btn, 'undo-2');
+		btn.setAttribute('aria-label', 'Undo');
+		const enabled = this.hooks.canUndo();
+		if (!enabled) btn.classList.add('is-disabled');
+		btn.addEventListener('click', () => {
+			if (!this.hooks.canUndo()) return;
+			this.hooks.onUndo();
+			this.rerender();
+		});
+		host.appendChild(btn);
+	}
+
+	private renderRedoSlot(host: HTMLElement, doc: Document, off: Offset) {
+		const btn = this.makeItem(doc, 'jot-palette-tool', off);
+		setIcon(btn, 'redo-2');
+		btn.setAttribute('aria-label', 'Redo');
+		const enabled = this.hooks.canRedo();
+		if (!enabled) btn.classList.add('is-disabled');
+		btn.addEventListener('click', () => {
+			if (!this.hooks.canRedo()) return;
+			this.hooks.onRedo();
+			this.rerender();
+		});
+		host.appendChild(btn);
 	}
 
 	private renderBackground(host: HTMLElement, doc: Document) {

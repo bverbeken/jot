@@ -121,3 +121,9 @@
 		0 0 0 3px var(--text-accent, #7a5cff),
 		0 1px 3px rgba(0, 0, 0, 0.35);
 }
+
+/* Undo/redo with no history available — visible but unclickable. */
+.jot-palette-item.is-disabled {
+	opacity: 0.35;
+	cursor: default;
+}
