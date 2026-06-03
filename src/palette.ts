@@ -38,16 +38,25 @@ const SUB_ARC_RADIUS = 170;
 // Buffer to keep the outer arc off the screen edge before flipping.
 const RADIAL_MARGIN_PX = 16;
 
-// Each item occupies this much arc, regardless of which arc it sits on.
-// An arc with n items spans (n-1) * ITEM_ANGULAR_DEG, centered on the arc
-// center angle — so 2 items get a tight fan, 7 get a wide one, with the
-// same item-to-item gap in both cases.
+// The geometric center of the arcs sits this far behind the press point
+// (opposite the fan direction), pulling the nearest item closer to where
+// the user pressed without shrinking the radius.
+const ANCHOR_OFFSET_PX = 60;
+
+// Each item occupies this much arc. Sub-arc items get a wider per-item
+// slot than main-arc items so the second tier feels distinct, not packed
+// against the first tier.
 const ITEM_ANGULAR_DEG = 24;
+const SUB_ITEM_ANGULAR_DEG = 28;
 const MAIN_ITEM_COUNT = 4;
 
-// Tilt away from the pen hand: 20° off straight up. Right-handed fan opens
-// upper-left, left-handed upper-right. Flipped variants used when there's
-// no room above the press point.
+// Left-to-right slot indexes on the main arc.
+const TOOL_SLOT_INDEX = 0;
+const ERASER_SLOT_INDEX = 1;
+const WIDTH_SLOT_INDEX = 2;
+const COLOR_SLOT_INDEX = 3;
+
+// Tilt away from the pen hand: 20° off straight up.
 const TILT_OFFSET_DEG = 20;
 
 // Background SVG annular sector — wider than the widest live arc so it
@@ -55,15 +64,16 @@ const TILT_OFFSET_DEG = 20;
 const BG_ANGULAR_PAD_DEG = 10;
 const BG_INNER_PAD_PX = 26;
 const BG_OUTER_PAD_PX = 24;
-const SVG_HALF = 260;
+const SVG_HALF = 280;
 
 type OnChange = (state: ToolState) => void;
 type SubArc = 'color' | 'tool' | 'width' | null;
 
-function arcSpanRad(n: number): number {
-	if (n <= 1) return 0;
-	return ((n - 1) * ITEM_ANGULAR_DEG * Math.PI) / 180;
-}
+const SUB_SLOT_OF: Record<Exclude<SubArc, null>, number> = {
+	color: COLOR_SLOT_INDEX,
+	tool: TOOL_SLOT_INDEX,
+	width: WIDTH_SLOT_INDEX,
+};
 
 const DRAWING_TOOLS: { id: Exclude<Tool, 'eraser'>; icon: string; label: string }[] = [
 	{ id: 'pen', icon: 'pencil', label: 'Pen' },
@@ -76,17 +86,12 @@ const TOOL_ICON: Record<Tool, string> = {
 	eraser: 'eraser',
 };
 
-// Center the fan opposite the pen hand so the wrist doesn't cover the
-// palette. Straight up is 270° (3π/2); we offset by TILT_OFFSET_DEG toward
-// the side opposite the pen hand. Flipped down when there's no room above.
+// Center the fan opposite the pen hand. Straight up is 270° (3π/2), offset
+// by TILT_OFFSET_DEG toward the side opposite the pen hand. Flipped down
+// when there's no room above the press point.
 function arcCenterAngle(handedness: Handedness, flipDown: boolean): number {
 	const tilt = (TILT_OFFSET_DEG * Math.PI) / 180;
-	const up = (3 * Math.PI) / 2;
-	const down = Math.PI / 2;
-	const base = flipDown ? down : up;
-	// In screen-space angles, upper-left is < 270° (i.e. base - tilt) and
-	// upper-right is > 270°. Right-handers want upper-left; left-handers
-	// upper-right.
+	const base = flipDown ? Math.PI / 2 : (3 * Math.PI) / 2;
 	return handedness === 'right' ? base - tilt : base + tilt;
 }
 
@@ -192,14 +197,31 @@ export class Palette {
 		this.rerender();
 	}
 
+	// Where the arc circle's geometric center sits, relative to the press
+	// point. Pushed behind the press point (opposite the fan direction) so
+	// the nearest items end up close to where the user actually pressed.
+	private arcOrigin(): Offset {
+		const center = arcCenterAngle(this.handedness, this.flipDown);
+		return {
+			ox: -ANCHOR_OFFSET_PX * Math.cos(center),
+			oy: -ANCHOR_OFFSET_PX * Math.sin(center),
+		};
+	}
+
+	// Angular position (radians) of main-arc slot i.
+	private slotAngle(i: number): number {
+		const step = (ITEM_ANGULAR_DEG * Math.PI) / 180;
+		const center = arcCenterAngle(this.handedness, this.flipDown);
+		return center + (i - (MAIN_ITEM_COUNT - 1) / 2) * step;
+	}
+
 	private renderItems(host: HTMLElement, doc: Document) {
 		this.renderBackground(host, doc);
 
-		const n = MAIN_ITEM_COUNT;
-		this.renderColorSlot(host, doc, this.itemOffset(0, n, MAIN_ARC_RADIUS));
-		this.renderToolSlot(host, doc, this.itemOffset(1, n, MAIN_ARC_RADIUS));
-		this.renderEraserSlot(host, doc, this.itemOffset(2, n, MAIN_ARC_RADIUS));
-		this.renderWidthSlot(host, doc, this.itemOffset(3, n, MAIN_ARC_RADIUS));
+		this.renderToolSlot(host, doc, this.mainOffset(TOOL_SLOT_INDEX));
+		this.renderEraserSlot(host, doc, this.mainOffset(ERASER_SLOT_INDEX));
+		this.renderWidthSlot(host, doc, this.mainOffset(WIDTH_SLOT_INDEX));
+		this.renderColorSlot(host, doc, this.mainOffset(COLOR_SLOT_INDEX));
 
 		if (this.subArc === 'color') this.renderSubColors(host, doc);
 		else if (this.subArc === 'tool') this.renderSubTools(host, doc);
@@ -208,13 +230,28 @@ export class Palette {
 
 	private renderBackground(host: HTMLElement, doc: Document) {
 		const center = arcCenterAngle(this.handedness, this.flipDown);
-		const subCount = this.subArcItemCount();
-		const widestSpan = Math.max(arcSpanRad(MAIN_ITEM_COUNT), arcSpanRad(subCount));
+		const stepMain = (ITEM_ANGULAR_DEG * Math.PI) / 180;
+		const stepSub = (SUB_ITEM_ANGULAR_DEG * Math.PI) / 180;
+		const mainHalf = ((MAIN_ITEM_COUNT - 1) / 2) * stepMain;
+
+		// Compute the angular range as offsets from the fan center, then
+		// widen to include the sub-arc range if one is open.
+		let leftRel = -mainHalf;
+		let rightRel = mainHalf;
+		if (this.subArc !== null) {
+			const slot = SUB_SLOT_OF[this.subArc];
+			const subN = this.subArcItemCount();
+			const subCenterRel = (slot - (MAIN_ITEM_COUNT - 1) / 2) * stepMain;
+			const subHalf = ((subN - 1) / 2) * stepSub;
+			leftRel = Math.min(leftRel, subCenterRel - subHalf);
+			rightRel = Math.max(rightRel, subCenterRel + subHalf);
+		}
+
 		const pad = (BG_ANGULAR_PAD_DEG * Math.PI) / 180;
-		const a1 = center - widestSpan / 2 - pad;
-		const a2 = center + widestSpan / 2 + pad;
+		const a1 = center + leftRel - pad;
+		const a2 = center + rightRel + pad;
 		const innerR = MAIN_ARC_RADIUS - BG_INNER_PAD_PX;
-		const outerArcR = subCount === 0 ? MAIN_ARC_RADIUS : SUB_ARC_RADIUS;
+		const outerArcR = this.subArc === null ? MAIN_ARC_RADIUS : SUB_ARC_RADIUS;
 		const outerR = outerArcR + BG_OUTER_PAD_PX;
 
 		const ns = 'http://www.w3.org/2000/svg';
@@ -226,6 +263,9 @@ export class Palette {
 		);
 		svg.setAttribute('width', `${SVG_HALF * 2}`);
 		svg.setAttribute('height', `${SVG_HALF * 2}`);
+		const origin = this.arcOrigin();
+		svg.style.setProperty('--arc-ox', `${origin.ox}px`);
+		svg.style.setProperty('--arc-oy', `${origin.oy}px`);
 		const path = doc.createElementNS(ns, 'path');
 		path.setAttribute('d', annularSectorPath(a1, a2, innerR, outerR));
 		svg.appendChild(path);
@@ -289,10 +329,11 @@ export class Palette {
 
 	private renderSubColors(host: HTMLElement, doc: Document) {
 		const n = PALETTE_COLORS.length;
+		const subCenter = this.slotAngle(COLOR_SLOT_INDEX);
 		for (let i = 0; i < n; i++) {
 			const color = PALETTE_COLORS[i];
 			if (!color) continue;
-			const off = this.itemOffset(i, n, SUB_ARC_RADIUS);
+			const off = this.subOffset(i, n, subCenter);
 			const btn = this.makeItem(doc, 'jot-palette-color', off);
 			btn.style.background = color;
 			btn.setAttribute('aria-label', `Color ${color}`);
@@ -308,10 +349,11 @@ export class Palette {
 
 	private renderSubTools(host: HTMLElement, doc: Document) {
 		const n = DRAWING_TOOLS.length;
+		const subCenter = this.slotAngle(TOOL_SLOT_INDEX);
 		for (let i = 0; i < n; i++) {
 			const t = DRAWING_TOOLS[i];
 			if (!t) continue;
-			const off = this.itemOffset(i, n, SUB_ARC_RADIUS);
+			const off = this.subOffset(i, n, subCenter);
 			const btn = this.makeItem(doc, 'jot-palette-tool', off);
 			setIcon(btn, t.icon);
 			btn.setAttribute('aria-label', t.label);
@@ -329,10 +371,11 @@ export class Palette {
 	private renderSubWidths(host: HTMLElement, doc: Document) {
 		const widths = PALETTE_WIDTHS;
 		const n = widths.length;
+		const subCenter = this.slotAngle(WIDTH_SLOT_INDEX);
 		for (let i = 0; i < n; i++) {
 			const w = widths[i];
 			if (w === undefined) continue;
-			const off = this.itemOffset(i, n, SUB_ARC_RADIUS);
+			const off = this.subOffset(i, n, subCenter);
 			const btn = this.makeItem(doc, 'jot-palette-width', off);
 			btn.setAttribute('aria-label', `Width ${w}`);
 			const dot = doc.createElement('span');
@@ -359,16 +402,26 @@ export class Palette {
 		return btn;
 	}
 
-	private itemOffset(i: number, n: number, radius: number): Offset {
-		// Each item gets ITEM_ANGULAR_DEG of arc. An n-item arc spans
-		// (n-1) * ITEM_ANGULAR_DEG centered on the handedness-tilted axis.
-		const step = (ITEM_ANGULAR_DEG * Math.PI) / 180;
-		const center = arcCenterAngle(this.handedness, this.flipDown);
-		const span = (n - 1) * step;
-		const theta = n === 1 ? center : center - span / 2 + i * step;
+	// Position of main-arc slot i, relative to the press point.
+	private mainOffset(i: number): Offset {
+		const origin = this.arcOrigin();
+		const theta = this.slotAngle(i);
 		return {
-			ox: Math.round(Math.cos(theta) * radius),
-			oy: Math.round(Math.sin(theta) * radius),
+			ox: Math.round(origin.ox + MAIN_ARC_RADIUS * Math.cos(theta)),
+			oy: Math.round(origin.oy + MAIN_ARC_RADIUS * Math.sin(theta)),
+		};
+	}
+
+	// Position of sub-arc item i (of n), centered on a given angle, relative
+	// to the press point. Sub-arc spacing is wider than main-arc spacing.
+	private subOffset(i: number, n: number, centerTheta: number): Offset {
+		const origin = this.arcOrigin();
+		const step = (SUB_ITEM_ANGULAR_DEG * Math.PI) / 180;
+		const span = (n - 1) * step;
+		const theta = n === 1 ? centerTheta : centerTheta - span / 2 + i * step;
+		return {
+			ox: Math.round(origin.ox + SUB_ARC_RADIUS * Math.cos(theta)),
+			oy: Math.round(origin.oy + SUB_ARC_RADIUS * Math.sin(theta)),
 		};
 	}
 

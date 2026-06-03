@@ -26,9 +26,10 @@
 	position: absolute;
 	left: 0;
 	top: 0;
-	width: 520px;
-	height: 520px;
-	transform: translate(-50%, -50%);
+	width: 560px;
+	height: 560px;
+	transform: translate(-50%, -50%)
+		translate(var(--arc-ox, 0px), var(--arc-oy, 0px));
 	pointer-events: none;
 	overflow: visible;
 }
