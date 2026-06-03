@@ -1,0 +1,22 @@
+# vscode
+.vscode
+
+# Intellij
+*.iml
+.idea
+
+# npm
+node_modules
+
+# Build outputs (release builds land at the repo root; uploaded to GitHub Releases)
+main.js
+*.map
+
+# Local development vault — never commit. Holds throwaway PDFs and a built copy of the plugin.
+dev-vault/
+
+# Obsidian plugin data
+data.json
+
+# macOS
+.DS_Store
