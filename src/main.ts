@@ -1,7 +1,9 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
+import { Plugin, TFile, WorkspaceLeaf } from 'obsidian';
 
 const PLUGIN_LOG = '[obsidian-ink]';
 const OVERLAY_CLASS = 'obsidian-ink-overlay';
+const PAGE_ANCHOR_CLASS = 'obsidian-ink-page-anchor';
+const PASSTHROUGH_CLASS = 'obsidian-ink-passthrough';
 const OVERLAY_KEY_ATTR = 'data-obsidian-ink-key';
 const PAGE_OBSERVED_ATTR = 'data-obsidian-ink-observed';
 const STROKE_COLOR = '#d33';
@@ -45,34 +47,17 @@ export default class ObsidianInkPlugin extends Plugin {
 	private saveTimers = new Map<string, number>();
 
 	async onload() {
-		console.log(`${PLUGIN_LOG} onload`);
-
-		this.addRibbonIcon('pencil', 'Obsidian Ink: probe active PDF view', () => {
-			this.probeActivePdfView();
-		});
-
-		this.addCommand({
-			id: 'probe-pdf-view',
-			name: 'Probe active PDF view (log DOM structure)',
-			callback: () => this.probeActivePdfView(),
-		});
-
-		this.addCommand({
-			id: 'attach-overlay-to-active-pdf',
-			name: 'Attach ink overlay to active PDF view',
-			callback: () => this.attachOverlayToActivePdfView(),
-		});
-
 		this.registerEvent(
 			this.app.workspace.on('file-open', async (file: TFile | null) => {
 				if (file?.extension !== 'pdf') return;
 				await this.ensureLoaded(file.path);
-				setTimeout(() => this.attachOverlayToActivePdfView(), 300);
+				window.setTimeout(() => this.attachOverlayToActivePdfView(), 300);
 			}),
 		);
 
 		this.registerEvent(
 			this.app.workspace.on('layout-change', () => {
+				this.pruneClosedLeafObservers();
 				this.attachOverlayToActivePdfView();
 			}),
 		);
@@ -179,36 +164,16 @@ export default class ObsidianInkPlugin extends Plugin {
 		return file?.path ?? null;
 	}
 
-	private probeActivePdfView() {
-		const leaf = this.getActivePdfLeaf();
-		if (!leaf) {
-			new Notice('No active PDF view. Open a PDF first.');
-			console.log(`${PLUGIN_LOG} probe: no active PDF view`);
-			return;
-		}
-		const container = leaf.view.containerEl;
-		console.log(`${PLUGIN_LOG} probe: view type = ${leaf.view.getViewType()}`);
-		console.log(`${PLUGIN_LOG} probe: containerEl =`, container);
-
-		const candidateSelectors = [
-			'.pdf-viewer',
-			'.pdf-container',
-			'.pdf-viewer-container',
-			'.pdfViewer',
-			'.page',
-			'canvas',
-		];
-		for (const sel of candidateSelectors) {
-			const matches = container.querySelectorAll(sel);
-			console.log(`${PLUGIN_LOG} probe: "${sel}" matched ${matches.length}`);
-			if (matches.length > 0 && matches.length < 5) {
-				matches.forEach((el, i) => {
-					console.log(`${PLUGIN_LOG}   [${i}]`, el);
-				});
+	private pruneClosedLeafObservers() {
+		if (this.containerObservers.size === 0) return;
+		const live = new Set<WorkspaceLeaf>();
+		this.app.workspace.iterateAllLeaves((leaf) => live.add(leaf));
+		for (const [leaf, observer] of this.containerObservers) {
+			if (!live.has(leaf)) {
+				observer.disconnect();
+				this.containerObservers.delete(leaf);
 			}
 		}
-
-		new Notice('PDF view probed. Check console.');
 	}
 
 	private attachOverlayToActivePdfView() {
@@ -264,19 +229,18 @@ export default class ObsidianInkPlugin extends Plugin {
 			existing.remove();
 		}
 
-		const pageStyle = getComputedStyle(page);
-		if (pageStyle.position === 'static') {
-			page.style.position = 'relative';
-		}
+		// PDF.js doesn't guarantee .page has a positioned context; this class
+		// applies position:relative so our absolutely-positioned overlay anchors
+		// to the page rather than to an ancestor.
+		page.classList.add(PAGE_ANCHOR_CLASS);
 
-		const overlay = document.createElement('canvas');
+		const overlay = activeDocument.createElement('canvas');
 		overlay.className = OVERLAY_CLASS;
 		overlay.setAttribute(OVERLAY_KEY_ATTR, key);
-		overlay.style.position = 'absolute';
-		overlay.style.inset = '0';
-		overlay.style.touchAction = 'none';
-		overlay.style.pointerEvents = 'auto';
-		overlay.style.zIndex = '1000';
+		// touch-action stays at the default 'auto' so finger touches scroll
+		// the PDF view normally; we ignore them at the pointerdown handler.
+		// Apple Pencil fires pointerType='pen' which is not affected by
+		// touch-action.
 
 		this.sizeOverlayToPage(overlay, page);
 		page.appendChild(overlay);
@@ -320,19 +284,19 @@ export default class ObsidianInkPlugin extends Plugin {
 		const targetH = Math.round(rect.height);
 		if (overlay.width !== targetW) overlay.width = targetW;
 		if (overlay.height !== targetH) overlay.height = targetH;
-		overlay.style.width = `${rect.width}px`;
-		overlay.style.height = `${rect.height}px`;
+		overlay.setCssStyles({
+			width: `${rect.width}px`,
+			height: `${rect.height}px`,
+		});
 	}
 
 	private disableTextLayerInteraction(page: HTMLElement) {
-		const textLayer = page.querySelector<HTMLElement>('.textLayer');
-		if (textLayer && textLayer.style.pointerEvents !== 'none') {
-			textLayer.style.pointerEvents = 'none';
-		}
-		const annotationLayer = page.querySelector<HTMLElement>('.annotationLayer');
-		if (annotationLayer && annotationLayer.style.pointerEvents !== 'none') {
-			annotationLayer.style.pointerEvents = 'none';
-		}
+		page.querySelector<HTMLElement>('.textLayer')?.classList.add(
+			PASSTHROUGH_CLASS,
+		);
+		page.querySelector<HTMLElement>('.annotationLayer')?.classList.add(
+			PASSTHROUGH_CLASS,
+		);
 	}
 
 	private redrawPage(canvas: HTMLCanvasElement) {
@@ -367,6 +331,9 @@ export default class ObsidianInkPlugin extends Plugin {
 		};
 
 		canvas.addEventListener('pointerdown', (e) => {
+			// Pen always draws (Apple Pencil), mouse draws for desktop testing.
+			// Finger touch is ignored so it can scroll the PDF view underneath.
+			if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return;
 			canvas.setPointerCapture(e.pointerId);
 			const first = toNormalized(e);
 			inProgress = [first];
@@ -403,7 +370,10 @@ export default class ObsidianInkPlugin extends Plugin {
 			inProgress = null;
 			try {
 				canvas.releasePointerCapture(e.pointerId);
-			} catch (_) {}
+			} catch {
+				// releasePointerCapture throws if the pointer isn't captured
+				// (e.g. pointercancel after losing capture) — safe to ignore.
+			}
 			this.redrawPage(canvas);
 		};
 		canvas.addEventListener('pointerup', finish);

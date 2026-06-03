@@ -1,8 +1,14 @@
-/*
+.obsidian-ink-overlay {
+	position: absolute;
+	inset: 0;
+	pointer-events: auto;
+	z-index: 1000;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.obsidian-ink-page-anchor {
+	position: relative;
+}
 
-If your plugin does not need CSS, delete this file.
-
-*/
+.obsidian-ink-passthrough {
+	pointer-events: none;
+}
