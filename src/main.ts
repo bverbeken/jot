@@ -8,6 +8,14 @@ const STROKE_COLOR = '#d33';
 // Stroke width as a fraction of the page's rendered height — keeps lines
 // looking the same thickness relative to the PDF at any zoom level.
 const STROKE_WIDTH = 0.0025;
+const INK_SUFFIX = '.ink.json';
+const SAVE_DEBOUNCE_MS = 250;
+const INK_FORMAT_VERSION = 1;
+
+interface InkFileFormat {
+	version: number;
+	pages: Record<string, Stroke[]>;
+}
 
 interface NormalizedPoint {
 	x: number;
@@ -24,9 +32,17 @@ interface Stroke {
 const pageKey = (filePath: string, pageNumber: number) =>
 	`${filePath}::${pageNumber}`;
 
+function filePathFromKey(key: string): string | null {
+	const idx = key.lastIndexOf('::');
+	if (idx < 0) return null;
+	return key.slice(0, idx);
+}
+
 export default class ObsidianInkPlugin extends Plugin {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
 	private strokes = new Map<string, Stroke[]>();
+	private loaded = new Set<string>();
+	private saveTimers = new Map<string, number>();
 
 	async onload() {
 		console.log(`${PLUGIN_LOG} onload`);
@@ -48,11 +64,10 @@ export default class ObsidianInkPlugin extends Plugin {
 		});
 
 		this.registerEvent(
-			this.app.workspace.on('file-open', (file: TFile | null) => {
-				if (file?.extension === 'pdf') {
-					console.log(`${PLUGIN_LOG} file-open pdf: ${file.path}`);
-					setTimeout(() => this.attachOverlayToActivePdfView(), 300);
-				}
+			this.app.workspace.on('file-open', async (file: TFile | null) => {
+				if (file?.extension !== 'pdf') return;
+				await this.ensureLoaded(file.path);
+				setTimeout(() => this.attachOverlayToActivePdfView(), 300);
 			}),
 		);
 
@@ -61,11 +76,92 @@ export default class ObsidianInkPlugin extends Plugin {
 				this.attachOverlayToActivePdfView();
 			}),
 		);
+
+		// Pick up an already-open PDF on plugin enable / Obsidian restart.
+		this.app.workspace.onLayoutReady(async () => {
+			const filePath = this.getActivePdfFilePath();
+			if (!filePath) return;
+			await this.ensureLoaded(filePath);
+			this.attachOverlayToActivePdfView();
+		});
 	}
 
 	onunload() {
 		this.containerObservers.forEach((o) => o.disconnect());
 		this.containerObservers.clear();
+		this.saveTimers.forEach((id) => window.clearTimeout(id));
+		this.saveTimers.clear();
+	}
+
+	private inkPathFor(pdfPath: string): string {
+		return pdfPath + INK_SUFFIX;
+	}
+
+	private async ensureLoaded(pdfPath: string) {
+		if (this.loaded.has(pdfPath)) return;
+		this.loaded.add(pdfPath);
+		await this.loadFromDisk(pdfPath);
+	}
+
+	private async loadFromDisk(pdfPath: string) {
+		const path = this.inkPathFor(pdfPath);
+		try {
+			if (!(await this.app.vault.adapter.exists(path))) return;
+			const text = await this.app.vault.adapter.read(path);
+			const parsed = JSON.parse(text) as InkFileFormat;
+			if (parsed.version !== INK_FORMAT_VERSION) {
+				console.warn(
+					`${PLUGIN_LOG} ${path} has unknown version ${parsed.version}, skipping`,
+				);
+				return;
+			}
+			for (const [pageNumStr, strokes] of Object.entries(parsed.pages)) {
+				const pageNumber = parseInt(pageNumStr, 10);
+				if (Number.isNaN(pageNumber)) continue;
+				this.strokes.set(pageKey(pdfPath, pageNumber), strokes);
+			}
+		} catch (err) {
+			console.error(`${PLUGIN_LOG} loadFromDisk failed for ${path}:`, err);
+		}
+	}
+
+	private async saveToDisk(pdfPath: string) {
+		const pages: Record<string, Stroke[]> = {};
+		const prefix = pdfPath + '::';
+		for (const [key, strokes] of this.strokes.entries()) {
+			if (!key.startsWith(prefix)) continue;
+			if (strokes.length === 0) continue;
+			pages[key.slice(prefix.length)] = strokes;
+		}
+		const path = this.inkPathFor(pdfPath);
+		try {
+			if (Object.keys(pages).length === 0) {
+				if (await this.app.vault.adapter.exists(path)) {
+					await this.app.vault.adapter.remove(path);
+				}
+				return;
+			}
+			const payload: InkFileFormat = {
+				version: INK_FORMAT_VERSION,
+				pages,
+			};
+			await this.app.vault.adapter.write(
+				path,
+				JSON.stringify(payload, null, 2),
+			);
+		} catch (err) {
+			console.error(`${PLUGIN_LOG} saveToDisk failed for ${path}:`, err);
+		}
+	}
+
+	private scheduleSave(pdfPath: string) {
+		const existing = this.saveTimers.get(pdfPath);
+		if (existing !== undefined) window.clearTimeout(existing);
+		const id = window.setTimeout(() => {
+			this.saveTimers.delete(pdfPath);
+			void this.saveToDisk(pdfPath);
+		}, SAVE_DEBOUNCE_MS);
+		this.saveTimers.set(pdfPath, id);
 	}
 
 	private getActivePdfLeaf(): WorkspaceLeaf | null {
@@ -301,6 +397,8 @@ export default class ObsidianInkPlugin extends Plugin {
 				const existing = this.strokes.get(key) ?? [];
 				existing.push(stroke);
 				this.strokes.set(key, existing);
+				const pdfPath = filePathFromKey(key);
+				if (pdfPath) this.scheduleSave(pdfPath);
 			}
 			inProgress = null;
 			try {
