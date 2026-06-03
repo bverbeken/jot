@@ -32,9 +32,10 @@ const MAX_PALETTE_WIDTH = PALETTE_WIDTHS[PALETTE_WIDTHS.length - 1] ?? 0.009;
 
 const PALETTE_CLASS = 'jot-palette';
 
-// Radii of the two arcs (px).
+// Radii of the two arcs (px). Chosen so the two stroked bands (50px thick
+// each) leave a 6px visible gap between them: 110+25 = 135, 166-25 = 141.
 const MAIN_ARC_RADIUS = 110;
-const SUB_ARC_RADIUS = 170;
+const SUB_ARC_RADIUS = 166;
 // Buffer to keep the outer arc off the screen edge before flipping.
 const RADIAL_MARGIN_PX = 16;
 
@@ -66,11 +67,10 @@ const COLOR_SLOT_INDEX = 3;
 // Tilt away from the pen hand: 20° off straight up.
 const TILT_OFFSET_DEG = 20;
 
-// Background SVG annular sector — wider than the widest live arc so it
-// surrounds the items with a small gutter.
-const BG_ANGULAR_PAD_DEG = 10;
-const BG_INNER_PAD_PX = 26;
-const BG_OUTER_PAD_PX = 24;
+// Background bands — drawn as thick stroked arcs centered on the item
+// radii, with rounded line caps for a pill-shaped end. Band thickness is
+// set via stroke-width in CSS.
+const BG_ANGULAR_PAD_DEG = 4;
 const SVG_HALF = 280;
 
 type OnChange = (state: ToolState) => void;
@@ -102,28 +102,13 @@ function arcCenterAngle(handedness: Handedness, flipDown: boolean): number {
 	return handedness === 'right' ? base - tilt : base + tilt;
 }
 
-function annularSectorPath(
-	a1: number,
-	a2: number,
-	innerR: number,
-	outerR: number,
-): string {
-	const x1o = outerR * Math.cos(a1);
-	const y1o = outerR * Math.sin(a1);
-	const x2o = outerR * Math.cos(a2);
-	const y2o = outerR * Math.sin(a2);
-	const x1i = innerR * Math.cos(a1);
-	const y1i = innerR * Math.sin(a1);
-	const x2i = innerR * Math.cos(a2);
-	const y2i = innerR * Math.sin(a2);
+function arcCenterlinePath(r: number, a1: number, a2: number): string {
+	const x1 = r * Math.cos(a1);
+	const y1 = r * Math.sin(a1);
+	const x2 = r * Math.cos(a2);
+	const y2 = r * Math.sin(a2);
 	const largeArc = Math.abs(a2 - a1) > Math.PI ? 1 : 0;
-	return [
-		`M ${x1o.toFixed(2)} ${y1o.toFixed(2)}`,
-		`A ${outerR} ${outerR} 0 ${largeArc} 1 ${x2o.toFixed(2)} ${y2o.toFixed(2)}`,
-		`L ${x2i.toFixed(2)} ${y2i.toFixed(2)}`,
-		`A ${innerR} ${innerR} 0 ${largeArc} 0 ${x1i.toFixed(2)} ${y1i.toFixed(2)}`,
-		'Z',
-	].join(' ');
+	return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${largeArc} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
 }
 
 export class Palette {
@@ -251,24 +236,23 @@ export class Palette {
 		svg.style.setProperty('--arc-ox', `${origin.ox}px`);
 		svg.style.setProperty('--arc-oy', `${origin.oy}px`);
 
-		// Main band — covers only the main arc's angular range and radii,
-		// so opening/closing a sub-arc doesn't change its shape.
+		// Main band — a stroked arc at the main radius. The band's
+		// thickness comes from stroke-width in CSS; rounded line caps
+		// give the ends a pill shape.
 		const mainHalf = ((MAIN_ITEM_COUNT - 1) / 2) * MAIN_ITEM_STEP_RAD;
 		const mainPath = doc.createElementNS(ns, 'path');
 		mainPath.setAttribute(
 			'd',
-			annularSectorPath(
+			arcCenterlinePath(
+				MAIN_ARC_RADIUS,
 				center - mainHalf - pad,
 				center + mainHalf + pad,
-				MAIN_ARC_RADIUS - BG_INNER_PAD_PX,
-				MAIN_ARC_RADIUS + BG_OUTER_PAD_PX,
 			),
 		);
 		svg.appendChild(mainPath);
 
-		// Sub band — separate annular sector at the sub arc's radius,
-		// only when a sub arc is open. Sits outside the main band with a
-		// small visible gap between the two rings.
+		// Sub band — separate stroked arc at the sub radius, only when a
+		// sub-arc is open.
 		if (this.subArc !== null) {
 			const slot = SUB_SLOT_OF[this.subArc];
 			const subN = this.subArcItemCount();
@@ -277,11 +261,10 @@ export class Palette {
 			const subPath = doc.createElementNS(ns, 'path');
 			subPath.setAttribute(
 				'd',
-				annularSectorPath(
+				arcCenterlinePath(
+					SUB_ARC_RADIUS,
 					subCenter - subHalf - pad,
 					subCenter + subHalf + pad,
-					SUB_ARC_RADIUS - BG_INNER_PAD_PX,
-					SUB_ARC_RADIUS + BG_OUTER_PAD_PX,
 				),
 			);
 			svg.appendChild(subPath);
