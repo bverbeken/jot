@@ -28,9 +28,11 @@ const HIGHLIGHTER_ALPHA = 0.35;
 // thinnest preset still looks like a marker, not a thick pen line.
 const HIGHLIGHTER_WIDTH_FACTOR = 4;
 // Stationary press duration before the palette pops, and the movement
-// tolerance for what counts as "stationary" in screen pixels.
+// tolerance for what counts as "stationary" in screen pixels. The tolerance
+// needs to be generous on iPad: Apple Pencil reports high-frequency samples
+// with natural jitter, so 5 px almost always tripped before the timer fired.
 const LONG_PRESS_MS = 300;
-const LONG_PRESS_MOVE_PX = 5;
+const LONG_PRESS_MOVE_PX = 15;
 // Whole-stroke eraser hit radius, as a fraction of page height.
 const ERASE_RADIUS = 0.02;
 const INK_SUFFIX = '.ink.json';
