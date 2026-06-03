@@ -236,27 +236,7 @@ export class Palette {
 
 	private renderBackground(host: HTMLElement, doc: Document) {
 		const center = arcCenterAngle(this.handedness, this.flipDown);
-		const mainHalf = ((MAIN_ITEM_COUNT - 1) / 2) * MAIN_ITEM_STEP_RAD;
-
-		// Compute the angular range as offsets from the fan center, then
-		// widen to include the sub-arc range if one is open.
-		let leftRel = -mainHalf;
-		let rightRel = mainHalf;
-		if (this.subArc !== null) {
-			const slot = SUB_SLOT_OF[this.subArc];
-			const subN = this.subArcItemCount();
-			const subCenterRel = (slot - (MAIN_ITEM_COUNT - 1) / 2) * MAIN_ITEM_STEP_RAD;
-			const subHalf = ((subN - 1) / 2) * SUB_ITEM_STEP_RAD;
-			leftRel = Math.min(leftRel, subCenterRel - subHalf);
-			rightRel = Math.max(rightRel, subCenterRel + subHalf);
-		}
-
 		const pad = (BG_ANGULAR_PAD_DEG * Math.PI) / 180;
-		const a1 = center + leftRel - pad;
-		const a2 = center + rightRel + pad;
-		const innerR = MAIN_ARC_RADIUS - BG_INNER_PAD_PX;
-		const outerArcR = this.subArc === null ? MAIN_ARC_RADIUS : SUB_ARC_RADIUS;
-		const outerR = outerArcR + BG_OUTER_PAD_PX;
 
 		const ns = 'http://www.w3.org/2000/svg';
 		const svg = doc.createElementNS(ns, 'svg');
@@ -270,9 +250,43 @@ export class Palette {
 		const origin = this.arcOrigin();
 		svg.style.setProperty('--arc-ox', `${origin.ox}px`);
 		svg.style.setProperty('--arc-oy', `${origin.oy}px`);
-		const path = doc.createElementNS(ns, 'path');
-		path.setAttribute('d', annularSectorPath(a1, a2, innerR, outerR));
-		svg.appendChild(path);
+
+		// Main band — covers only the main arc's angular range and radii,
+		// so opening/closing a sub-arc doesn't change its shape.
+		const mainHalf = ((MAIN_ITEM_COUNT - 1) / 2) * MAIN_ITEM_STEP_RAD;
+		const mainPath = doc.createElementNS(ns, 'path');
+		mainPath.setAttribute(
+			'd',
+			annularSectorPath(
+				center - mainHalf - pad,
+				center + mainHalf + pad,
+				MAIN_ARC_RADIUS - BG_INNER_PAD_PX,
+				MAIN_ARC_RADIUS + BG_OUTER_PAD_PX,
+			),
+		);
+		svg.appendChild(mainPath);
+
+		// Sub band — separate annular sector at the sub arc's radius,
+		// only when a sub arc is open. Sits outside the main band with a
+		// small visible gap between the two rings.
+		if (this.subArc !== null) {
+			const slot = SUB_SLOT_OF[this.subArc];
+			const subN = this.subArcItemCount();
+			const subCenter = center + (slot - (MAIN_ITEM_COUNT - 1) / 2) * MAIN_ITEM_STEP_RAD;
+			const subHalf = ((subN - 1) / 2) * SUB_ITEM_STEP_RAD;
+			const subPath = doc.createElementNS(ns, 'path');
+			subPath.setAttribute(
+				'd',
+				annularSectorPath(
+					subCenter - subHalf - pad,
+					subCenter + subHalf + pad,
+					SUB_ARC_RADIUS - BG_INNER_PAD_PX,
+					SUB_ARC_RADIUS + BG_OUTER_PAD_PX,
+				),
+			);
+			svg.appendChild(subPath);
+		}
+
 		host.appendChild(svg);
 	}
 
