@@ -1,9 +1,9 @@
 {
-	"id": "obsidian-ink",
-	"name": "Obsidian Ink",
-	"version": "0.0.2",
+	"id": "jot",
+	"name": "Jot",
+	"version": "0.1.0",
 	"minAppVersion": "1.0.0",
-	"description": "Handwrite PDF annotations with Apple Pencil. Strokes are saved as standard ink annotations inside the PDF file.",
+	"description": "Handwrite annotations with Apple Pencil. Strokes are stored in a JSON sidecar next to the original file, which is never modified. Supports PDFs.",
 	"author": "Ben Verbeken",
 	"authorUrl": "https://github.com/bverbeken",
 	"isDesktopOnly": false

@@ -1,14 +1,14 @@
-.obsidian-ink-overlay {
+.jot-overlay {
 	position: absolute;
 	inset: 0;
 	pointer-events: auto;
 	z-index: 1000;
 }
 
-.obsidian-ink-page-anchor {
+.jot-page-anchor {
 	position: relative;
 }
 
-.obsidian-ink-passthrough {
+.jot-passthrough {
 	pointer-events: none;
 }

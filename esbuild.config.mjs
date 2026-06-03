@@ -19,7 +19,7 @@ const devVaultPluginDir = join(
 	'dev-vault',
 	'.obsidian',
 	'plugins',
-	'obsidian-ink',
+	'jot',
 );
 const outdir = prod ? '.' : devVaultPluginDir;
 const outfile = join(outdir, 'main.js');

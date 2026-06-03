@@ -1,11 +1,11 @@
 import { Plugin, TFile, WorkspaceLeaf } from 'obsidian';
 
-const PLUGIN_LOG = '[obsidian-ink]';
-const OVERLAY_CLASS = 'obsidian-ink-overlay';
-const PAGE_ANCHOR_CLASS = 'obsidian-ink-page-anchor';
-const PASSTHROUGH_CLASS = 'obsidian-ink-passthrough';
-const OVERLAY_KEY_ATTR = 'data-obsidian-ink-key';
-const PAGE_OBSERVED_ATTR = 'data-obsidian-ink-observed';
+const PLUGIN_LOG = '[jot]';
+const OVERLAY_CLASS = 'jot-overlay';
+const PAGE_ANCHOR_CLASS = 'jot-page-anchor';
+const PASSTHROUGH_CLASS = 'jot-passthrough';
+const OVERLAY_KEY_ATTR = 'data-jot-key';
+const PAGE_OBSERVED_ATTR = 'data-jot-observed';
 const STROKE_COLOR = '#d33';
 // Stroke width as a fraction of the page's rendered height — keeps lines
 // looking the same thickness relative to the PDF at any zoom level.
@@ -40,7 +40,7 @@ function filePathFromKey(key: string): string | null {
 	return key.slice(0, idx);
 }
 
-export default class ObsidianInkPlugin extends Plugin {
+export default class JotPlugin extends Plugin {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
 	private strokes = new Map<string, Stroke[]>();
 	private loaded = new Set<string>();
