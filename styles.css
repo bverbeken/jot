@@ -206,6 +206,12 @@
 	transform: scale(1);
 }
 
+/* On a color swatch we keep the swatch color visible — just overlay the
+   check, with stroke colour picked in JS for contrast. */
+.jot-palette-confirm.on-swatch {
+	background: transparent;
+}
+
 .jot-palette-confirm svg {
 	width: 60%;
 	height: 60%;

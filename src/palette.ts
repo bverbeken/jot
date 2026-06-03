@@ -105,6 +105,17 @@ const TOOL_ICON: Record<Tool, string> = {
 // Center the fan opposite the pen hand. Straight up is 270° (3π/2), offset
 // by TILT_OFFSET_DEG toward the side opposite the pen hand. Flipped down
 // when there's no room above the press point.
+function isDarkColor(hex: string): boolean {
+	const h = hex.replace('#', '');
+	if (h.length !== 6) return false;
+	const r = parseInt(h.slice(0, 2), 16);
+	const g = parseInt(h.slice(2, 4), 16);
+	const b = parseInt(h.slice(4, 6), 16);
+	if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) return false;
+	// Perceived luminance on 0..255 — below mid-light is "dark" for contrast.
+	return 0.299 * r + 0.587 * g + 0.114 * b < 140;
+}
+
 function arcCenterAngle(handedness: Handedness, flipDown: boolean): number {
 	const tilt = (TILT_OFFSET_DEG * Math.PI) / 180;
 	const base = flipDown ? Math.PI / 2 : (3 * Math.PI) / 2;
@@ -438,6 +449,7 @@ export class Palette {
 			const off = this.subOffset(i, n, subCenter);
 			const btn = this.makeItem(doc, 'jot-palette-color', off);
 			btn.style.background = color;
+			btn.dataset.color = color;
 			btn.setAttribute('aria-label', `Color ${color}`);
 			btn.addEventListener('click', () => {
 				this.state.color = color;
@@ -494,6 +506,9 @@ export class Palette {
 
 	// Flash a check inside the tapped slot, then close the palette.
 	// Respects prefers-reduced-motion (skips the scale-in, still closes).
+	// Color swatches don't get the green fill — just the check, so the user
+	// can still see which color they picked. Check color is chosen for
+	// contrast against the swatch.
 	private confirmAndDismiss(btn: HTMLElement) {
 		const doc = btn.ownerDocument;
 		const win = doc.defaultView ?? window;
@@ -503,6 +518,11 @@ export class Palette {
 		const check = doc.createElement('span');
 		check.className = 'jot-palette-confirm';
 		setIcon(check, 'check');
+		const swatchColor = btn.dataset.color;
+		if (swatchColor) {
+			check.classList.add('on-swatch');
+			check.style.color = isDarkColor(swatchColor) ? '#fff' : '#000';
+		}
 		btn.appendChild(check);
 		win.requestAnimationFrame(() => check.classList.add('is-visible'));
 		win.setTimeout(() => this.hide(), reducedMotion ? 80 : 280);
