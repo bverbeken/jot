@@ -1,16 +1,19 @@
-import { App, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf } from 'obsidian';
-import { LineCapStyle, PDFDocument, PDFPage, rgb } from 'pdf-lib';
-import { DEFAULT_TOOL_STATE, Palette, Tool, ToolState } from './palette';
+import { Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
+import { PDFDocument } from 'pdf-lib';
+import { DEFAULT_TOOL_STATE, Palette, ToolState } from './palette';
+import { DEFAULT_SETTINGS, JotSettings, JotSettingTab } from './settings';
+import {
+	drawHighlighterPolyline,
+	drawSegment,
+	drawStroke,
+	ERASE_RADIUS,
+	NormalizedPoint,
+	Stroke,
+	strokeIntersects,
+} from './strokes';
+import { ExportChoiceModal, drawStrokesOnPdfPage } from './merge';
 
-export type Handedness = 'right' | 'left';
-
-interface JotSettings {
-	handedness: Handedness;
-}
-
-const DEFAULT_SETTINGS: JotSettings = {
-	handedness: 'right',
-};
+export type { Handedness } from './palette';
 
 const PLUGIN_LOG = '[jot]';
 const OVERLAY_CLASS = 'jot-overlay';
@@ -18,16 +21,6 @@ const PAGE_ANCHOR_CLASS = 'jot-page-anchor';
 const PASSTHROUGH_CLASS = 'jot-passthrough';
 const OVERLAY_KEY_ATTR = 'data-jot-key';
 const PAGE_OBSERVED_ATTR = 'data-jot-observed';
-// Pressure (0..1) scales the per-segment width by this factor range. The
-// floor keeps a barely-touching stroke visible; the ceiling gives a clear
-// heavy-press marker. Mouse input reports pressure 0.5 (button down), which
-// lands near the middle of the range, so desktop testing looks normal.
-const PRESSURE_MIN_FACTOR = 0.5;
-const PRESSURE_MAX_FACTOR = 1.8;
-const HIGHLIGHTER_ALPHA = 0.35;
-// Highlighter strokes render at this multiple of the chosen pen width so the
-// thinnest preset still looks like a marker, not a thick pen line.
-const HIGHLIGHTER_WIDTH_FACTOR = 4;
 // Stationary press duration before the palette pops, and the movement
 // tolerance for what counts as "stationary" in screen pixels. The tolerance
 // needs to be generous on iPad: Apple Pencil reports high-frequency samples
@@ -39,8 +32,6 @@ const LONG_PRESS_MOVE_PX = 15;
 // the pen because fingers are less precise.
 const TWO_FINGER_HOLD_MS = 300;
 const TWO_FINGER_MOVE_PX = 25;
-// Whole-stroke eraser hit radius, as a fraction of page height.
-const ERASE_RADIUS = 0.02;
 // Per-PDF cap on the undo stack so a long session can't unbound memory.
 const MAX_UNDO_DEPTH = 50;
 const INK_SUFFIX = '.ink.json';
@@ -50,19 +41,6 @@ const INK_FORMAT_VERSION = 2;
 interface InkFileFormat {
 	version: number;
 	pages: Record<string, Stroke[]>;
-}
-
-interface NormalizedPoint {
-	x: number;
-	y: number;
-	pressure: number;
-}
-
-interface Stroke {
-	points: NormalizedPoint[];
-	color: string;
-	width: number;
-	tool: Tool;
 }
 
 const pageKey = (filePath: string, pageNumber: number) =>
@@ -908,113 +886,6 @@ interface UndoEntry {
 	prevStrokes: Stroke[];
 }
 
-function widthFactorForPressure(pressure: number): number {
-	const p = Math.max(0, Math.min(1, pressure));
-	return PRESSURE_MIN_FACTOR + (PRESSURE_MAX_FACTOR - PRESSURE_MIN_FACTOR) * p;
-}
-
-function drawSegment(
-	ctx: CanvasRenderingContext2D,
-	a: NormalizedPoint,
-	b: NormalizedPoint,
-	_tool: Tool,
-	color: string,
-	baseWidth: number,
-	canvasWidth: number,
-	canvasHeight: number,
-) {
-	const avgPressure = (a.pressure + b.pressure) / 2;
-	ctx.lineWidth = baseWidth * widthFactorForPressure(avgPressure) * canvasHeight;
-	ctx.strokeStyle = color;
-	ctx.lineCap = 'round';
-	ctx.lineJoin = 'round';
-	ctx.beginPath();
-	ctx.moveTo(a.x * canvasWidth, a.y * canvasHeight);
-	ctx.lineTo(b.x * canvasWidth, b.y * canvasHeight);
-	ctx.stroke();
-}
-
-function drawHighlighterPolyline(
-	ctx: CanvasRenderingContext2D,
-	points: NormalizedPoint[],
-	color: string,
-	baseWidth: number,
-	canvasWidth: number,
-	canvasHeight: number,
-) {
-	if (points.length < 2) return;
-	ctx.save();
-	ctx.lineWidth = baseWidth * HIGHLIGHTER_WIDTH_FACTOR * canvasHeight;
-	ctx.strokeStyle = color;
-	ctx.lineCap = 'butt';
-	ctx.lineJoin = 'round';
-	ctx.globalAlpha = HIGHLIGHTER_ALPHA;
-	ctx.beginPath();
-	const first = points[0];
-	if (!first) {
-		ctx.restore();
-		return;
-	}
-	ctx.moveTo(first.x * canvasWidth, first.y * canvasHeight);
-	for (let i = 1; i < points.length; i++) {
-		const p = points[i];
-		if (!p) continue;
-		ctx.lineTo(p.x * canvasWidth, p.y * canvasHeight);
-	}
-	ctx.stroke();
-	ctx.restore();
-}
-
-function drawStroke(
-	ctx: CanvasRenderingContext2D,
-	stroke: Stroke,
-	width: number,
-	height: number,
-) {
-	if (stroke.tool === 'highlighter') {
-		drawHighlighterPolyline(
-			ctx,
-			stroke.points,
-			stroke.color,
-			stroke.width,
-			width,
-			height,
-		);
-		return;
-	}
-	let prev: NormalizedPoint | null = null;
-	for (const p of stroke.points) {
-		if (prev) {
-			drawSegment(
-				ctx,
-				prev,
-				p,
-				stroke.tool,
-				stroke.color,
-				stroke.width,
-				width,
-				height,
-			);
-		}
-		prev = p;
-	}
-}
-
-function strokeIntersects(
-	stroke: Stroke,
-	x: number,
-	y: number,
-	r: number,
-): boolean {
-	const r2 = r * r;
-	for (const p of stroke.points) {
-		const dx = p.x - x;
-		const dy = p.y - y;
-		if (dx * dx + dy * dy < r2) return true;
-	}
-	return false;
-}
-
 function createHoldIndicator(
 	doc: Document,
 	clientX: number,
@@ -1038,137 +909,3 @@ function createHoldIndicator(
 	return el;
 }
 
-function drawStrokesOnPdfPage(page: PDFPage, strokes: Stroke[]) {
-	const pageW = page.getWidth();
-	const pageH = page.getHeight();
-	for (const stroke of strokes) {
-		if (stroke.points.length < 2) continue;
-		const c = hexToRgb(stroke.color);
-		const baseWidth = stroke.width * pageH;
-		const color = rgb(c.r, c.g, c.b);
-		if (stroke.tool === 'highlighter') {
-			const thickness = baseWidth * HIGHLIGHTER_WIDTH_FACTOR;
-			for (let i = 1; i < stroke.points.length; i++) {
-				const a = stroke.points[i - 1];
-				const b = stroke.points[i];
-				if (!a || !b) continue;
-				page.drawLine({
-					start: { x: a.x * pageW, y: pageH - a.y * pageH },
-					end: { x: b.x * pageW, y: pageH - b.y * pageH },
-					thickness,
-					color,
-					opacity: HIGHLIGHTER_ALPHA,
-					lineCap: LineCapStyle.Butt,
-				});
-			}
-			continue;
-		}
-		for (let i = 1; i < stroke.points.length; i++) {
-			const a = stroke.points[i - 1];
-			const b = stroke.points[i];
-			if (!a || !b) continue;
-			const avgPressure = (a.pressure + b.pressure) / 2;
-			const clamped = Math.max(0, Math.min(1, avgPressure));
-			const factor =
-				PRESSURE_MIN_FACTOR +
-				(PRESSURE_MAX_FACTOR - PRESSURE_MIN_FACTOR) * clamped;
-			page.drawLine({
-				start: { x: a.x * pageW, y: pageH - a.y * pageH },
-				end: { x: b.x * pageW, y: pageH - b.y * pageH },
-				thickness: baseWidth * factor,
-				color,
-				opacity: 1,
-				lineCap: LineCapStyle.Round,
-			});
-		}
-	}
-}
-
-function hexToRgb(hex: string): { r: number; g: number; b: number } {
-	const h = hex.replace('#', '').padEnd(6, '0').slice(0, 6);
-	return {
-		r: (parseInt(h.slice(0, 2), 16) || 0) / 255,
-		g: (parseInt(h.slice(2, 4), 16) || 0) / 255,
-		b: (parseInt(h.slice(4, 6), 16) || 0) / 255,
-	};
-}
-
-class ExportChoiceModal extends Modal {
-	private onChoice: (choice: 'overwrite' | 'copy' | 'cancel') => void;
-	private copyTarget: string;
-
-	constructor(
-		app: App,
-		copyTarget: string,
-		onChoice: (choice: 'overwrite' | 'copy' | 'cancel') => void,
-	) {
-		super(app);
-		this.copyTarget = copyTarget;
-		this.onChoice = onChoice;
-	}
-
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.empty();
-		contentEl.createEl('h2', { text: 'Merge notes into PDF' });
-		contentEl.createEl('p', {
-			text: 'Bake the strokes for this PDF into a PDF file. The sidecar .ink.json is dropped only if you overwrite the original.',
-		});
-		const annotatedName = this.copyTarget.replace(/.*\//, '');
-		const buttons = contentEl.createDiv({ cls: 'jot-modal-buttons' });
-		const copyBtn = buttons.createEl('button', {
-			text: `Save as "${annotatedName}"`,
-		});
-		copyBtn.classList.add('mod-cta');
-		copyBtn.addEventListener('click', () => {
-			this.onChoice('copy');
-			this.close();
-		});
-		const overwriteBtn = buttons.createEl('button', {
-			text: 'Overwrite original',
-		});
-		overwriteBtn.addEventListener('click', () => {
-			this.onChoice('overwrite');
-			this.close();
-		});
-		const cancelBtn = buttons.createEl('button', { text: 'Cancel' });
-		cancelBtn.addEventListener('click', () => {
-			this.onChoice('cancel');
-			this.close();
-		});
-	}
-
-	onClose() {
-		this.contentEl.empty();
-	}
-}
-
-class JotSettingTab extends PluginSettingTab {
-	plugin: JotPlugin;
-
-	constructor(app: App, plugin: JotPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display() {
-		const { containerEl } = this;
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Handedness')
-			.setDesc(
-				'The palette fans away from your pen hand so it doesn\'t sit under your wrist.',
-			)
-			.addDropdown((d) =>
-				d
-					.addOption('right', 'Right-handed')
-					.addOption('left', 'Left-handed')
-					.setValue(this.plugin.settings.handedness)
-					.onChange(async (value) => {
-						this.plugin.settings.handedness = value as Handedness;
-						await this.plugin.saveSettings();
-					}),
-			);
-	}
-}
