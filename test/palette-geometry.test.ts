@@ -12,7 +12,7 @@ import {
 	mainSlotOffset,
 	slotAngle,
 	subSlotOffset,
-} from './palette-geometry';
+} from '../src/palette-geometry';
 
 const toDeg = (rad: number) => (rad * 180) / Math.PI;
 

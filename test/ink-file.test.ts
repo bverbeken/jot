@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Stroke } from './strokes';
+import type { Stroke } from '../src/strokes';
 import {
 	INK_FORMAT_VERSION,
 	buildInkPayload,
@@ -9,7 +9,7 @@ import {
 	pageKey,
 	parseInkText,
 	pdfPathFromKey,
-} from './ink-file';
+} from '../src/ink-file';
 
 const penStroke = (color = '#000'): Stroke => ({
 	points: [{ x: 0.1, y: 0.2, pressure: 0.5 }],

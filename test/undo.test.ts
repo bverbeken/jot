@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Stroke } from './strokes';
-import { MAX_UNDO_DEPTH, UndoEntry, UndoHistory } from './undo';
+import type { Stroke } from '../src/strokes';
+import { MAX_UNDO_DEPTH, UndoEntry, UndoHistory } from '../src/undo';
 
 const stroke = (color = '#000'): Stroke => ({
 	points: [{ x: 0, y: 0, pressure: 0.5 }],

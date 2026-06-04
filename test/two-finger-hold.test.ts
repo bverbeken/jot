@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TwoFingerHoldDetector } from './two-finger-hold';
+import { TwoFingerHoldDetector } from '../src/two-finger-hold';
 
 const DURATION = 300;
 const THRESHOLD = 25;

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LongPressDetector } from './long-press';
+import { LongPressDetector } from '../src/long-press';
 
 const DURATION = 300;
 const THRESHOLD = 5;

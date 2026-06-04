@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isDarkColor } from './palette-color';
+import { isDarkColor } from '../src/palette-color';
 
 describe('isDarkColor', () => {
 	it('returns true for black', () => {

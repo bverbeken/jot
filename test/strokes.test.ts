@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { NormalizedPoint, Stroke } from './strokes';
+import type { NormalizedPoint, Stroke } from '../src/strokes';
 import {
 	PRESSURE_MAX_FACTOR,
 	PRESSURE_MIN_FACTOR,
@@ -8,7 +8,7 @@ import {
 	strokeIntersects,
 	subdivideQuadratic,
 	widthFactorForPressure,
-} from './strokes';
+} from '../src/strokes';
 
 const point = (x: number, y: number, pressure = 0.5): NormalizedPoint => ({ x, y, pressure });
 
