@@ -80,7 +80,7 @@ export class ExportChoiceModal extends Modal {
 		contentEl.empty();
 		contentEl.createEl('h2', { text: 'Merge notes into PDF' });
 		contentEl.createEl('p', {
-			text: 'Bake the strokes for this PDF into a PDF file. The sidecar .ink.json is dropped only if you overwrite the original.',
+			text: 'Bake the strokes for this PDF into a PDF file. The sidecar .jot.json is dropped only if you overwrite the original.',
 		});
 		const annotatedName = this.copyTarget.replace(/.*\//, '');
 		const buttons = contentEl.createDiv({ cls: 'jot-modal-buttons' });

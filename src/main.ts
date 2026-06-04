@@ -18,15 +18,18 @@ import { createHoldIndicator } from './hold-indicator';
 import { LongPressDetector } from './long-press';
 import { TwoFingerHoldDetector } from './two-finger-hold';
 import {
-	INK_SUFFIX,
-	buildInkPayload,
-	inkPathFor,
+	buildJotPayload,
+	dropStrokesForPdf,
+	hasStrokesForPdf,
+	isSidecarPath,
 	isSupportedVersion,
+	jotPathFor,
 	migrateStroke,
 	pageKey,
-	parseInkText,
+	parseJotText,
 	pdfPathFromKey,
-} from './ink-file';
+	pdfPathFromSidecar,
+} from './jot-file';
 import { UndoEntry, UndoHistory } from './undo';
 
 export type { Handedness } from './palette';
@@ -117,10 +120,10 @@ export default class JotPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on('modify', (file) => {
-				if (!file.path.endsWith(INK_SUFFIX)) return;
+				if (!isSidecarPath(file.path)) return;
 				if (this.isOwnRecentSave(file.path)) return;
-				const pdfPath = file.path.slice(0, -INK_SUFFIX.length);
-				void this.reloadSidecar(pdfPath);
+				const pdfPath = pdfPathFromSidecar(file.path);
+				if (pdfPath) void this.reloadSidecar(pdfPath);
 			}),
 		);
 
@@ -145,12 +148,12 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private async loadFromDisk(pdfPath: string) {
-		const path = inkPathFor(pdfPath);
-		this.dropInMemoryStrokesFor(pdfPath);
+		const path = jotPathFor(pdfPath);
+		dropStrokesForPdf(pdfPath, this.strokes);
 		try {
 			if (!(await this.app.vault.adapter.exists(path))) return;
 			const text = await this.app.vault.adapter.read(path);
-			const parsed = parseInkText(text);
+			const parsed = parseJotText(text);
 			if (!parsed) return;
 			if (!isSupportedVersion(parsed.version)) {
 				console.warn(`${PLUGIN_LOG} ${path} has unknown version ${parsed.version}, skipping`);
@@ -163,10 +166,7 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private dropInMemoryStrokesFor(pdfPath: string) {
-		const prefix = pdfPath + '::';
-		for (const key of [...this.strokes.keys()]) {
-			if (key.startsWith(prefix)) this.strokes.delete(key);
-		}
+		dropStrokesForPdf(pdfPath, this.strokes);
 	}
 
 	private populateStrokesFromPayload(pdfPath: string, pages: Record<string, Stroke[]>) {
@@ -178,8 +178,8 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private async saveToDisk(pdfPath: string) {
-		const path = inkPathFor(pdfPath);
-		const payload = buildInkPayload(pdfPath, this.strokes);
+		const path = jotPathFor(pdfPath);
+		const payload = buildJotPayload(pdfPath, this.strokes);
 		try {
 			if (!payload) {
 				if (await this.app.vault.adapter.exists(path)) {
@@ -676,11 +676,7 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private pdfHasStrokes(pdfPath: string): boolean {
-		const prefix = pdfPath + '::';
-		for (const [key, strokes] of this.strokes.entries()) {
-			if (key.startsWith(prefix) && strokes.length > 0) return true;
-		}
-		return false;
+		return hasStrokesForPdf(pdfPath, this.strokes);
 	}
 
 	private async doMerge(
@@ -717,7 +713,7 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private async discardSidecar(pdfPath: string) {
-		const path = inkPathFor(pdfPath);
+		const path = jotPathFor(pdfPath);
 		try {
 			if (await this.app.vault.adapter.exists(path)) {
 				await this.app.vault.adapter.remove(path);

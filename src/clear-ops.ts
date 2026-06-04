@@ -1,4 +1,4 @@
-import { PAGE_KEY_SEPARATOR } from './ink-file';
+import { PAGE_KEY_SEPARATOR } from './jot-file';
 import type { Stroke } from './strokes';
 import type { UndoEntry } from './undo';
 
