@@ -55,8 +55,10 @@ function filePathFromKey(key: string): string | null {
 export default class JotPlugin extends Plugin {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
 	private strokes = new Map<string, Stroke[]>();
-	private loaded = new Set<string>();
 	private saveTimers = new Map<string, number>();
+	// Sidecar paths we wrote ourselves, with a timestamp. The vault.on(
+	// 'modify') watcher checks this to suppress reload-on-our-own-save.
+	private recentSelfSaves = new Map<string, number>();
 	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
 	private palette!: Palette;
 	settings: JotSettings = { ...DEFAULT_SETTINGS };
@@ -104,6 +106,23 @@ export default class JotPlugin extends Plugin {
 			}),
 		);
 
+		// Reload the sidecar when an external change arrives (Obsidian Sync,
+		// iCloud, etc. push a new .ink.json). Filters to our sidecar files
+		// and skips events triggered by our own writes via the recent-self-
+		// write timestamp set in saveToDisk.
+		this.registerEvent(
+			this.app.vault.on('modify', (file) => {
+				if (!file.path.endsWith(INK_SUFFIX)) return;
+				const lastSelf = this.recentSelfSaves.get(file.path);
+				if (lastSelf !== undefined && Date.now() - lastSelf < 1500) {
+					this.recentSelfSaves.delete(file.path);
+					return;
+				}
+				const pdfPath = file.path.slice(0, -INK_SUFFIX.length);
+				void this.reloadSidecar(pdfPath);
+			}),
+		);
+
 		// Pick up an already-open PDF on plugin enable / Obsidian restart.
 		this.app.workspace.onLayoutReady(async () => {
 			const filePath = this.getActivePdfFilePath();
@@ -126,13 +145,22 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private async ensureLoaded(pdfPath: string) {
-		if (this.loaded.has(pdfPath)) return;
-		this.loaded.add(pdfPath);
+		// Always re-read from disk. An in-memory cache here masked external
+		// updates (Obsidian Sync etc.) — once a PDF had been loaded, the
+		// previous code never reloaded it, so even closing and reopening the
+		// PDF still showed stale strokes until the plugin restarted.
 		await this.loadFromDisk(pdfPath);
 	}
 
 	private async loadFromDisk(pdfPath: string) {
 		const path = this.inkPathFor(pdfPath);
+		// Drop any stale in-memory strokes for this PDF before repopulating
+		// from the file, so an erased page becomes empty on reload instead
+		// of keeping its old strokes around in the Map.
+		const prefix = pdfPath + '::';
+		for (const key of [...this.strokes.keys()]) {
+			if (key.startsWith(prefix)) this.strokes.delete(key);
+		}
 		try {
 			if (!(await this.app.vault.adapter.exists(path))) return;
 			const text = await this.app.vault.adapter.read(path);
@@ -187,9 +215,23 @@ export default class JotPlugin extends Plugin {
 				path,
 				JSON.stringify(payload, null, 2),
 			);
+			this.recentSelfSaves.set(path, Date.now());
 		} catch (err) {
 			console.error(`${PLUGIN_LOG} saveToDisk failed for ${path}:`, err);
 		}
+	}
+
+	private async reloadSidecar(pdfPath: string) {
+		await this.loadFromDisk(pdfPath);
+		// Redraw every open canvas for this PDF so the live view picks up
+		// the externally-applied changes without needing a tab close.
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			const file = (leaf.view as { file?: TFile }).file;
+			if (file?.path !== pdfPath) return;
+			leaf.view.containerEl
+				.querySelectorAll<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`)
+				.forEach((canvas) => this.redrawPage(canvas));
+		});
 	}
 
 	private scheduleSave(pdfPath: string) {
