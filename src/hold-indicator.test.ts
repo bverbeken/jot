@@ -1,3 +1,4 @@
+/* eslint-disable obsidianmd/prefer-active-doc */
 import { describe, expect, it } from 'vitest';
 import { createHoldIndicator } from './hold-indicator';
 

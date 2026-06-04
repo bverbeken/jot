@@ -12,6 +12,9 @@ import {
 	strokeIntersects,
 } from './strokes';
 import { ExportChoiceModal, drawStrokesOnPdfPage } from './merge';
+import { createHoldIndicator } from './hold-indicator';
+import { LongPressDetector } from './long-press';
+import { TwoFingerHoldDetector } from './two-finger-hold';
 import {
 	INK_SUFFIX,
 	buildInkPayload,
@@ -398,14 +401,125 @@ export default class JotPlugin extends Plugin {
 			console.error(`${PLUGIN_LOG} no 2d context`);
 			return;
 		}
+		this.blockStylusGesturePreemption(canvas);
 
-		// On iPadOS, the OS-level gesture recognizer runs at the legacy
-		// touch-event layer. Without this, a long Apple Pencil stroke gets
-		// reinterpreted as a scroll partway through, cancelling our pointer
-		// capture. preventDefault on touchstart/move for stylus touches stops
-		// the preemption; finger touches are left alone so they still scroll
-		// the PDF view normally.
-		const blockStylusGesture = (e: TouchEvent) => {
+		const state = new PenStrokeState();
+		let activePointerId: number | null = null;
+		let holdIndicator: HTMLElement | null = null;
+		let twoFingerIndicator: HTMLElement | null = null;
+
+		const removeHoldIndicator = () => {
+			holdIndicator?.remove();
+			holdIndicator = null;
+		};
+		const removeTwoFingerIndicator = () => {
+			twoFingerIndicator?.remove();
+			twoFingerIndicator = null;
+		};
+		const releasePointerCapture = () => {
+			if (activePointerId === null) return;
+			try { canvas.releasePointerCapture(activePointerId); } catch {
+				// pointer was already released
+			}
+			activePointerId = null;
+		};
+
+		const openPaletteAt = (x: number, y: number) => {
+			this.palette.show(activeDocument.body, x, y, this.settings.handedness);
+		};
+
+		const longPress = new LongPressDetector(
+			{ durationMs: LONG_PRESS_MS, movementThresholdPx: LONG_PRESS_MOVE_PX },
+			{
+				onFire: () => {
+					removeHoldIndicator();
+					const { clientX, clientY } = state.pressedAt;
+					state.reset();
+					this.redrawPage(canvas);
+					releasePointerCapture();
+					openPaletteAt(clientX, clientY);
+				},
+				onCancel: removeHoldIndicator,
+			},
+		);
+
+		const twoFingerHold = new TwoFingerHoldDetector(
+			{ durationMs: TWO_FINGER_HOLD_MS, movementThresholdPx: TWO_FINGER_MOVE_PX },
+			{
+				onArm: (cx, cy) => {
+					if (this.palette.isOpen() || state.isBusy()) {
+						twoFingerHold.cancel();
+						return;
+					}
+					twoFingerIndicator = createHoldIndicator(activeDocument, cx, cy, TWO_FINGER_HOLD_MS);
+					activeDocument.body.appendChild(twoFingerIndicator);
+				},
+				onFire: (cx, cy) => {
+					if (this.palette.isOpen()) return;
+					openPaletteAt(cx, cy);
+				},
+				onDisarm: removeTwoFingerIndicator,
+			},
+		);
+
+		canvas.addEventListener('pointerdown', (e) => {
+			if (e.pointerType === 'touch') {
+				twoFingerHold.pointerDown(e.pointerId, e.clientX, e.clientY);
+				return;
+			}
+			if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return;
+			if (this.palette.isOpen()) return;
+
+			canvas.setPointerCapture(e.pointerId);
+			activePointerId = e.pointerId;
+			state.beginAt(e, this.toolState.tool, () =>
+				this.snapshotForCanvas(canvas),
+			);
+			if (state.isDrawing()) state.appendDrawingPoint(toNormalized(canvas, e));
+
+			holdIndicator = createHoldIndicator(activeDocument, e.clientX, e.clientY, LONG_PRESS_MS);
+			activeDocument.body.appendChild(holdIndicator);
+			longPress.start(e.clientX, e.clientY);
+			e.preventDefault();
+		});
+
+		canvas.addEventListener('pointermove', (e) => {
+			if (e.pointerType === 'touch') {
+				twoFingerHold.pointerMove(e.pointerId, e.clientX, e.clientY);
+				return;
+			}
+			longPress.move(e.clientX, e.clientY);
+			if (state.isErasing()) {
+				if (this.eraseAt(canvas, e)) state.markErased();
+				e.preventDefault();
+				return;
+			}
+			this.continueDrawingStroke(ctx, canvas, state, e);
+		});
+
+		const finish = (e: PointerEvent) => {
+			if (e.pointerType === 'touch') {
+				twoFingerHold.pointerUp(e.pointerId);
+				return;
+			}
+			longPress.cancel();
+			if (state.isErasing()) {
+				this.finalizeEraserGesture(state);
+				releasePointerCapture();
+				return;
+			}
+			if (state.isDrawing()) {
+				this.finalizeDrawingStroke(canvas, state);
+				window.requestAnimationFrame(() => this.redrawPage(canvas));
+			}
+			releasePointerCapture();
+		};
+		canvas.addEventListener('pointerup', finish);
+		canvas.addEventListener('pointercancel', finish);
+	}
+
+	private blockStylusGesturePreemption(canvas: HTMLCanvasElement) {
+		const blockStylus = (e: TouchEvent) => {
 			for (let i = 0; i < e.touches.length; i++) {
 				const t = e.touches.item(i) as Touch & { touchType?: string };
 				if (t?.touchType === 'stylus') {
@@ -414,298 +528,77 @@ export default class JotPlugin extends Plugin {
 				}
 			}
 		};
-		canvas.addEventListener('touchstart', blockStylusGesture, { passive: false });
-		canvas.addEventListener('touchmove', blockStylusGesture, { passive: false });
+		canvas.addEventListener('touchstart', blockStylus, { passive: false });
+		canvas.addEventListener('touchmove', blockStylus, { passive: false });
+	}
 
-		let inProgress: NormalizedPoint[] | null = null;
-		let eraserActive = false;
-		let eraseSnapshot: UndoEntry | null = null;
-		let eraseTouched = false;
-		let downPoint: { clientX: number; clientY: number } | null = null;
-		let longPressTimer: number | null = null;
-		let activePointerId: number | null = null;
-		let holdIndicator: HTMLElement | null = null;
-		let twoFingerIndicator: HTMLElement | null = null;
-		// Finger tracker for the two-finger hold gesture. Keyed by pointerId.
-		const activeTouches = new Map<number, {
-			clientX: number;
-			clientY: number;
-			downX: number;
-			downY: number;
-		}>();
-		let twoFingerTimer: number | null = null;
+	private snapshotForCanvas(canvas: HTMLCanvasElement): UndoEntry | null {
+		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
+		if (!key) return null;
+		const pdfPath = pdfPathFromKey(key);
+		if (!pdfPath) return null;
+		return { pdfPath, key, prevStrokes: [...(this.strokes.get(key) ?? [])] };
+	}
 
-		const removeHoldIndicator = () => {
-			if (holdIndicator) {
-				holdIndicator.remove();
-				holdIndicator = null;
-			}
-		};
-		const removeTwoFingerIndicator = () => {
-			if (twoFingerIndicator) {
-				twoFingerIndicator.remove();
-				twoFingerIndicator = null;
-			}
-		};
-
-		const cancelLongPress = () => {
-			if (longPressTimer !== null) {
-				window.clearTimeout(longPressTimer);
-				longPressTimer = null;
-			}
-			removeHoldIndicator();
-		};
-
-		const cancelTwoFinger = () => {
-			if (twoFingerTimer !== null) {
-				window.clearTimeout(twoFingerTimer);
-				twoFingerTimer = null;
-			}
-			removeTwoFingerIndicator();
-		};
-
-		const toNormalized = (e: PointerEvent): NormalizedPoint => {
-			const rect = canvas.getBoundingClientRect();
-			return {
-				x: (e.clientX - rect.left) / rect.width,
-				y: (e.clientY - rect.top) / rect.height,
-				pressure: e.pressure,
-			};
-		};
-
-		canvas.addEventListener('pointerdown', (e) => {
-			// Finger touch: track for the two-finger-hold gesture, otherwise
-			// pass through so it can scroll the PDF view underneath.
-			if (e.pointerType === 'touch') {
-				activeTouches.set(e.pointerId, {
-					clientX: e.clientX,
-					clientY: e.clientY,
-					downX: e.clientX,
-					downY: e.clientY,
-				});
-				cancelTwoFinger();
-				if (
-					activeTouches.size === 2 &&
-					!this.palette.isOpen() &&
-					inProgress === null &&
-					!eraserActive
-				) {
-					const pts = [...activeTouches.values()];
-					const p0 = pts[0];
-					const p1 = pts[1];
-					if (p0 && p1) {
-						const initialCx = (p0.clientX + p1.clientX) / 2;
-						const initialCy = (p0.clientY + p1.clientY) / 2;
-						twoFingerIndicator = createHoldIndicator(
-							activeDocument,
-							initialCx,
-							initialCy,
-							TWO_FINGER_HOLD_MS,
-						);
-						activeDocument.body.appendChild(twoFingerIndicator);
-					}
-					twoFingerTimer = window.setTimeout(() => {
-						twoFingerTimer = null;
-						removeTwoFingerIndicator();
-						if (activeTouches.size !== 2) return;
-						if (this.palette.isOpen()) return;
-						const pts2 = [...activeTouches.values()];
-						const q0 = pts2[0];
-						const q1 = pts2[1];
-						if (!q0 || !q1) return;
-						const cx = (q0.clientX + q1.clientX) / 2;
-						const cy = (q0.clientY + q1.clientY) / 2;
-						this.palette.show(
-							activeDocument.body,
-							cx,
-							cy,
-							this.settings.handedness,
-						);
-					}, TWO_FINGER_HOLD_MS);
-				}
-				return;
-			}
-			// Pen always draws (Apple Pencil), mouse draws for desktop testing.
-			if (e.pointerType !== 'pen' && e.pointerType !== 'mouse') return;
-			// If the palette is up, a tap on the canvas is the outside-close
-			// gesture; don't also start a stroke.
-			if (this.palette.isOpen()) return;
-			canvas.setPointerCapture(e.pointerId);
-			activePointerId = e.pointerId;
-			downPoint = { clientX: e.clientX, clientY: e.clientY };
-
-			if (this.toolState.tool === 'eraser') {
-				// Defer the first erase to pointermove so a stationary press
-				// opens the palette without destroying a stroke first.
-				eraserActive = true;
-				eraseTouched = false;
-				const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
-				const pdfPath = key ? pdfPathFromKey(key) : null;
-				if (key && pdfPath) {
-					eraseSnapshot = {
-						pdfPath,
-						key,
-						prevStrokes: [...(this.strokes.get(key) ?? [])],
-					};
-				}
-			} else {
-				inProgress = [toNormalized(e)];
-			}
-
-			cancelLongPress();
-			const openX = e.clientX;
-			const openY = e.clientY;
-			holdIndicator = createHoldIndicator(
-				activeDocument,
-				openX,
-				openY,
-				LONG_PRESS_MS,
+	private continueDrawingStroke(
+		ctx: CanvasRenderingContext2D,
+		canvas: HTMLCanvasElement,
+		state: PenStrokeState,
+		e: PointerEvent,
+	) {
+		if (!state.isDrawing()) return;
+		const previous = state.lastDrawingPoint();
+		if (!previous) return;
+		const next = toNormalized(canvas, e);
+		state.appendDrawingPoint(next);
+		const canvasSize = { width: canvas.width, height: canvas.height };
+		if (this.toolState.tool === 'highlighter') {
+			this.redrawPage(canvas);
+			drawHighlighterPolyline(
+				ctx,
+				state.drawingPoints(),
+				this.toolState.color,
+				this.toolState.width,
+				canvasSize,
 			);
-			activeDocument.body.appendChild(holdIndicator);
-			longPressTimer = window.setTimeout(() => {
-				longPressTimer = null;
-				removeHoldIndicator();
-				// Stationary hold: abandon any in-progress stroke, wipe any
-				// sub-threshold ink that landed, and pop the palette.
-				inProgress = null;
-				eraserActive = false;
-				eraseSnapshot = null;
-				eraseTouched = false;
-				this.redrawPage(canvas);
-				if (activePointerId !== null) {
-					try { canvas.releasePointerCapture(activePointerId); } catch {
-						// already released — safe to ignore
-					}
-					activePointerId = null;
-				}
-				this.palette.show(activeDocument.body, openX, openY, this.settings.handedness);
-			}, LONG_PRESS_MS);
-			e.preventDefault();
-		});
+		} else {
+			drawSegment(
+				ctx,
+				previous,
+				next,
+				this.toolState.color,
+				this.toolState.width,
+				canvasSize,
+			);
+		}
+		e.preventDefault();
+	}
 
-		canvas.addEventListener('pointermove', (e) => {
-			if (e.pointerType === 'touch') {
-				const t = activeTouches.get(e.pointerId);
-				if (!t) return;
-				t.clientX = e.clientX;
-				t.clientY = e.clientY;
-				if (twoFingerTimer !== null) {
-					const dx = e.clientX - t.downX;
-					const dy = e.clientY - t.downY;
-					if (
-						dx * dx + dy * dy >
-						TWO_FINGER_MOVE_PX * TWO_FINGER_MOVE_PX
-					) {
-						cancelTwoFinger();
-					}
-				}
-				return;
-			}
-			if (longPressTimer !== null && downPoint) {
-				const dx = e.clientX - downPoint.clientX;
-				const dy = e.clientY - downPoint.clientY;
-				if (dx * dx + dy * dy > LONG_PRESS_MOVE_PX * LONG_PRESS_MOVE_PX) {
-					cancelLongPress();
-				}
-			}
-			if (eraserActive) {
-				if (this.eraseAt(canvas, e)) eraseTouched = true;
-				e.preventDefault();
-				return;
-			}
-			if (!inProgress) return;
-			const prev = inProgress[inProgress.length - 1];
-			if (!prev) return;
-			const p = toNormalized(e);
-			inProgress.push(p);
-			if (this.toolState.tool === 'highlighter') {
-				// Highlighter must avoid the per-segment alpha-overlap beading.
-				// Cheapest correct approach: redraw the page and repaint the
-				// in-progress points as one continuous polyline each move.
-				this.redrawPage(canvas);
-				drawHighlighterPolyline(
-					ctx,
-					inProgress,
-					this.toolState.color,
-					this.toolState.width,
-					{ width: canvas.width, height: canvas.height },
-				);
-			} else {
-				drawSegment(
-					ctx,
-					prev,
-					p,
-					this.toolState.color,
-					this.toolState.width,
-					{ width: canvas.width, height: canvas.height },
-				);
-			}
-			e.preventDefault();
-		});
+	private finalizeEraserGesture(state: PenStrokeState) {
+		const snapshot = state.takeEraserSnapshot();
+		if (snapshot) this.pushUndo(snapshot);
+		state.reset();
+	}
 
-		const finish = (e: PointerEvent) => {
-			if (e.pointerType === 'touch') {
-				activeTouches.delete(e.pointerId);
-				if (activeTouches.size < 2) cancelTwoFinger();
-				return;
+	private finalizeDrawingStroke(canvas: HTMLCanvasElement, state: PenStrokeState) {
+		const points = state.drawingPoints();
+		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
+		if (key && points.length > 0) {
+			const existing = this.strokes.get(key) ?? [];
+			const pdfPath = pdfPathFromKey(key);
+			if (pdfPath) {
+				this.pushUndo({ pdfPath, key, prevStrokes: [...existing] });
 			}
-			cancelLongPress();
-			downPoint = null;
-			activePointerId = null;
-			if (eraserActive) {
-				eraserActive = false;
-				if (eraseTouched && eraseSnapshot) {
-					this.pushUndo(eraseSnapshot);
-				}
-				eraseSnapshot = null;
-				eraseTouched = false;
-				try {
-					canvas.releasePointerCapture(e.pointerId);
-				} catch {
-					// already released
-				}
-				return;
-			}
-			if (inProgress) {
-				const stroke: Stroke = {
-					points: inProgress,
-					color: this.toolState.color,
-					width: this.toolState.width,
-					tool: this.toolState.tool,
-				};
-				const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
-				if (key) {
-					const existing = this.strokes.get(key) ?? [];
-					const pdfPath = pdfPathFromKey(key);
-					if (pdfPath) {
-						this.pushUndo({ pdfPath, key, prevStrokes: [...existing] });
-					}
-					existing.push(stroke);
-					this.strokes.set(key, existing);
-					if (pdfPath) this.scheduleSave(pdfPath);
-				}
-				inProgress = null;
-				// Replace the rough live-drawn segments with the smoothed
-				// replay so the finished stroke matches the saved one. rAF
-				// defers past whatever Obsidian does on pointerup — a
-				// synchronous redraw here used to wipe the stroke (the
-				// regression we fixed in 0.2.1).
-				window.requestAnimationFrame(() => this.redrawPage(canvas));
-			}
-			try {
-				canvas.releasePointerCapture(e.pointerId);
-			} catch {
-				// releasePointerCapture throws if the pointer isn't captured
-				// (e.g. pointercancel after losing capture) — safe to ignore.
-			}
-			// No redraw needed: the live pointermove handler already painted the
-			// stroke to the canvas, and the stroke is now in the in-memory map for
-			// future redraws (resize, page mutation, file re-open). Reclearing and
-			// repainting here used to wipe the stroke on pointerup in Obsidian's
-			// PDF view — visible during draw, gone the instant the pointer lifted.
-		};
-		canvas.addEventListener('pointerup', finish);
-		canvas.addEventListener('pointercancel', finish);
+			existing.push({
+				points,
+				color: this.toolState.color,
+				width: this.toolState.width,
+				tool: this.toolState.tool,
+			});
+			this.strokes.set(key, existing);
+			if (pdfPath) this.scheduleSave(pdfPath);
+		}
+		state.reset();
 	}
 
 	async loadSettings() {
@@ -957,26 +850,76 @@ class ConfirmClearModal extends Modal {
 	}
 }
 
-function createHoldIndicator(
-	doc: Document,
-	clientX: number,
-	clientY: number,
-	durationMs: number,
-): HTMLElement {
-	const el = doc.createElement('div');
-	el.className = 'jot-hold-indicator';
-	el.style.left = `${clientX}px`;
-	el.style.top = `${clientY}px`;
-	el.style.setProperty('--jot-hold-duration', `${durationMs}ms`);
-	const ns = 'http://www.w3.org/2000/svg';
-	const svg = doc.createElementNS(ns, 'svg');
-	svg.setAttribute('viewBox', '0 0 28 28');
-	const circle = doc.createElementNS(ns, 'circle');
-	circle.setAttribute('cx', '14');
-	circle.setAttribute('cy', '14');
-	circle.setAttribute('r', '12');
-	svg.appendChild(circle);
-	el.appendChild(svg);
-	return el;
+function toNormalized(canvas: HTMLCanvasElement, e: PointerEvent): NormalizedPoint {
+	const rect = canvas.getBoundingClientRect();
+	return {
+		x: (e.clientX - rect.left) / rect.width,
+		y: (e.clientY - rect.top) / rect.height,
+		pressure: e.pressure,
+	};
+}
+
+class PenStrokeState {
+	private drawing: NormalizedPoint[] | null = null;
+	private eraserActive = false;
+	private eraserSnapshot: UndoEntry | null = null;
+	private eraserTouched = false;
+	pressedAt = { clientX: 0, clientY: 0 };
+
+	beginAt(e: PointerEvent, tool: 'pen' | 'highlighter' | 'eraser', snapshotForEraser: () => UndoEntry | null): void {
+		this.pressedAt = { clientX: e.clientX, clientY: e.clientY };
+		if (tool === 'eraser') {
+			this.eraserActive = true;
+			this.eraserTouched = false;
+			this.eraserSnapshot = snapshotForEraser();
+		} else {
+			this.drawing = [];
+		}
+	}
+
+	isDrawing(): boolean {
+		return this.drawing !== null;
+	}
+
+	isErasing(): boolean {
+		return this.eraserActive;
+	}
+
+	isBusy(): boolean {
+		return this.isDrawing() || this.isErasing();
+	}
+
+	appendDrawingPoint(point: NormalizedPoint): void {
+		this.drawing?.push(point);
+	}
+
+	drawingPoints(): NormalizedPoint[] {
+		return this.drawing ?? [];
+	}
+
+	lastDrawingPoint(): NormalizedPoint | null {
+		const list = this.drawing;
+		if (!list || list.length === 0) return null;
+		return list[list.length - 1] ?? null;
+	}
+
+	markErased(): void {
+		this.eraserTouched = true;
+	}
+
+	takeEraserSnapshot(): UndoEntry | null {
+		const snapshot = this.eraserTouched ? this.eraserSnapshot : null;
+		this.eraserSnapshot = null;
+		this.eraserTouched = false;
+		this.eraserActive = false;
+		return snapshot;
+	}
+
+	reset(): void {
+		this.drawing = null;
+		this.eraserActive = false;
+		this.eraserSnapshot = null;
+		this.eraserTouched = false;
+	}
 }
 

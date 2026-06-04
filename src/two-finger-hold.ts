@@ -61,14 +61,14 @@ export class TwoFingerHoldDetector {
 	}
 
 	private arm(): void {
-		const center = this.centroid();
-		this.callbacks.onArm(center.x, center.y);
 		this.timerId = window.setTimeout(() => {
 			this.timerId = null;
 			if (this.touches.size !== REQUIRED_TOUCH_COUNT) return;
 			const fireCenter = this.centroid();
 			this.callbacks.onFire(fireCenter.x, fireCenter.y);
 		}, this.options.durationMs);
+		const center = this.centroid();
+		this.callbacks.onArm(center.x, center.y);
 	}
 
 	private centroid(): { x: number; y: number } {
