@@ -12,6 +12,16 @@ import {
 	strokeIntersects,
 } from './strokes';
 import { ExportChoiceModal, drawStrokesOnPdfPage } from './merge';
+import {
+	INK_SUFFIX,
+	buildInkPayload,
+	inkPathFor,
+	isSupportedVersion,
+	migrateStroke,
+	pageKey,
+	parseInkText,
+	pdfPathFromKey,
+} from './ink-file';
 import { UndoEntry, UndoHistory } from './undo';
 
 export type { Handedness } from './palette';
@@ -33,23 +43,7 @@ const LONG_PRESS_MOVE_PX = 15;
 // the pen because fingers are less precise.
 const TWO_FINGER_HOLD_MS = 300;
 const TWO_FINGER_MOVE_PX = 25;
-const INK_SUFFIX = '.ink.json';
 const SAVE_DEBOUNCE_MS = 250;
-const INK_FORMAT_VERSION = 2;
-
-interface InkFileFormat {
-	version: number;
-	pages: Record<string, Stroke[]>;
-}
-
-const pageKey = (filePath: string, pageNumber: number) =>
-	`${filePath}::${pageNumber}`;
-
-function filePathFromKey(key: string): string | null {
-	const idx = key.lastIndexOf('::');
-	if (idx < 0) return null;
-	return key.slice(0, idx);
-}
 
 export default class JotPlugin extends Plugin {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
@@ -158,81 +152,54 @@ export default class JotPlugin extends Plugin {
 		this.palette?.hide();
 	}
 
-	private inkPathFor(pdfPath: string): string {
-		return pdfPath + INK_SUFFIX;
-	}
-
 	private async ensureLoaded(pdfPath: string) {
-		// Always re-read from disk. An in-memory cache here masked external
-		// updates (Obsidian Sync etc.) — once a PDF had been loaded, the
-		// previous code never reloaded it, so even closing and reopening the
-		// PDF still showed stale strokes until the plugin restarted.
 		await this.loadFromDisk(pdfPath);
 	}
 
 	private async loadFromDisk(pdfPath: string) {
-		const path = this.inkPathFor(pdfPath);
-		// Drop any stale in-memory strokes for this PDF before repopulating
-		// from the file, so an erased page becomes empty on reload instead
-		// of keeping its old strokes around in the Map.
-		const prefix = pdfPath + '::';
-		for (const key of [...this.strokes.keys()]) {
-			if (key.startsWith(prefix)) this.strokes.delete(key);
-		}
+		const path = inkPathFor(pdfPath);
+		this.dropInMemoryStrokesFor(pdfPath);
 		try {
 			if (!(await this.app.vault.adapter.exists(path))) return;
 			const text = await this.app.vault.adapter.read(path);
-			const parsed = JSON.parse(text) as InkFileFormat;
-			if (parsed.version !== INK_FORMAT_VERSION && parsed.version !== 1) {
-				console.warn(
-					`${PLUGIN_LOG} ${path} has unknown version ${parsed.version}, skipping`,
-				);
+			const parsed = parseInkText(text);
+			if (!parsed) return;
+			if (!isSupportedVersion(parsed.version)) {
+				console.warn(`${PLUGIN_LOG} ${path} has unknown version ${parsed.version}, skipping`);
 				return;
 			}
-			for (const [pageNumStr, strokes] of Object.entries(parsed.pages)) {
-				const pageNumber = parseInt(pageNumStr, 10);
-				if (Number.isNaN(pageNumber)) continue;
-				// v1 strokes have no `tool` field — treat them as pen.
-				const upgraded: Stroke[] = strokes.map((s) => {
-					const legacy = s as Partial<Stroke>;
-					return {
-						points: s.points,
-						color: s.color,
-						width: s.width,
-						tool: legacy.tool ?? 'pen',
-					};
-				});
-				this.strokes.set(pageKey(pdfPath, pageNumber), upgraded);
-			}
+			this.populateStrokesFromPayload(pdfPath, parsed.pages);
 		} catch (err) {
 			console.error(`${PLUGIN_LOG} loadFromDisk failed for ${path}:`, err);
 		}
 	}
 
-	private async saveToDisk(pdfPath: string) {
-		const pages: Record<string, Stroke[]> = {};
+	private dropInMemoryStrokesFor(pdfPath: string) {
 		const prefix = pdfPath + '::';
-		for (const [key, strokes] of this.strokes.entries()) {
-			if (!key.startsWith(prefix)) continue;
-			if (strokes.length === 0) continue;
-			pages[key.slice(prefix.length)] = strokes;
+		for (const key of [...this.strokes.keys()]) {
+			if (key.startsWith(prefix)) this.strokes.delete(key);
 		}
-		const path = this.inkPathFor(pdfPath);
+	}
+
+	private populateStrokesFromPayload(pdfPath: string, pages: Record<string, Stroke[]>) {
+		for (const [pageNumStr, strokes] of Object.entries(pages)) {
+			const pageNumber = parseInt(pageNumStr, 10);
+			if (Number.isNaN(pageNumber)) continue;
+			this.strokes.set(pageKey(pdfPath, pageNumber), strokes.map(migrateStroke));
+		}
+	}
+
+	private async saveToDisk(pdfPath: string) {
+		const path = inkPathFor(pdfPath);
+		const payload = buildInkPayload(pdfPath, this.strokes);
 		try {
-			if (Object.keys(pages).length === 0) {
+			if (!payload) {
 				if (await this.app.vault.adapter.exists(path)) {
 					await this.app.vault.adapter.remove(path);
 				}
 				return;
 			}
-			const payload: InkFileFormat = {
-				version: INK_FORMAT_VERSION,
-				pages,
-			};
-			await this.app.vault.adapter.write(
-				path,
-				JSON.stringify(payload, null, 2),
-			);
+			await this.app.vault.adapter.write(path, JSON.stringify(payload, null, 2));
 			this.recentSelfSaves.set(path, Date.now());
 		} catch (err) {
 			console.error(`${PLUGIN_LOG} saveToDisk failed for ${path}:`, err);
@@ -573,7 +540,7 @@ export default class JotPlugin extends Plugin {
 				eraserActive = true;
 				eraseTouched = false;
 				const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
-				const pdfPath = key ? filePathFromKey(key) : null;
+				const pdfPath = key ? pdfPathFromKey(key) : null;
 				if (key && pdfPath) {
 					eraseSnapshot = {
 						pdfPath,
@@ -709,7 +676,7 @@ export default class JotPlugin extends Plugin {
 				const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
 				if (key) {
 					const existing = this.strokes.get(key) ?? [];
-					const pdfPath = filePathFromKey(key);
+					const pdfPath = pdfPathFromKey(key);
 					if (pdfPath) {
 						this.pushUndo({ pdfPath, key, prevStrokes: [...existing] });
 					}
@@ -773,7 +740,7 @@ export default class JotPlugin extends Plugin {
 		if (removed === 0) return false;
 		this.strokes.set(key, kept);
 		this.redrawPage(canvas);
-		const pdfPath = filePathFromKey(key);
+		const pdfPath = pdfPathFromKey(key);
 		if (pdfPath) this.scheduleSave(pdfPath);
 		return true;
 	}
@@ -888,7 +855,7 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private async discardSidecar(pdfPath: string) {
-		const path = this.inkPathFor(pdfPath);
+		const path = inkPathFor(pdfPath);
 		try {
 			if (await this.app.vault.adapter.exists(path)) {
 				await this.app.vault.adapter.remove(path);
