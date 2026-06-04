@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
+import { App, Modal, Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
 import { PDFDocument } from 'pdf-lib';
 import { DEFAULT_TOOL_STATE, Palette, ToolState } from './palette';
 import { DEFAULT_SETTINGS, JotSettings, JotSettingTab } from './settings';
@@ -75,6 +75,17 @@ export default class JotPlugin extends Plugin {
 				const path = this.getActivePdfFilePath();
 				if (!path) return false;
 				if (!checking) void this.startMergeFlow(path);
+				return true;
+			},
+		});
+		this.addCommand({
+			id: 'clear-annotations',
+			name: 'Clear annotations on this PDF',
+			checkCallback: (checking) => {
+				const path = this.getActivePdfFilePath();
+				if (!path) return false;
+				if (!this.pdfHasStrokes(path)) return false;
+				if (!checking) this.startClearFlow(path);
 				return true;
 			},
 		});
@@ -923,6 +934,39 @@ export default class JotPlugin extends Plugin {
 		}
 	}
 
+	private startClearFlow(pdfPath: string) {
+		new ConfirmClearModal(this.app, pdfPath, () => {
+			this.clearAnnotations(pdfPath);
+		}).open();
+	}
+
+	private clearAnnotations(pdfPath: string) {
+		const prefix = pdfPath + '::';
+		let cleared = 0;
+		for (const [key, strokes] of this.strokes.entries()) {
+			if (!key.startsWith(prefix)) continue;
+			if (strokes.length === 0) continue;
+			// One undo entry per page so undo restores them one page at a
+			// time — the existing UndoEntry shape is single-key, and bulk
+			// clear is rare enough not to warrant a new multi-page entry
+			// type.
+			this.pushUndo({ pdfPath, key, prevStrokes: [...strokes] });
+			this.strokes.set(key, []);
+			cleared += strokes.length;
+		}
+		if (cleared === 0) return;
+		this.scheduleSave(pdfPath);
+		const leaf = this.getActivePdfLeaf();
+		if (leaf) {
+			leaf.view.containerEl
+				.querySelectorAll<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`)
+				.forEach((canvas) => this.redrawPage(canvas));
+		}
+		new Notice(
+			`Jot: cleared ${cleared} stroke${cleared === 1 ? '' : 's'}. Undo to restore.`,
+		);
+	}
+
 	private overlayForKey(key: string): HTMLCanvasElement | null {
 		const leaf = this.getActivePdfLeaf();
 		if (!leaf) return null;
@@ -937,6 +981,40 @@ interface UndoEntry {
 	pdfPath: string;
 	key: string;
 	prevStrokes: Stroke[];
+}
+
+class ConfirmClearModal extends Modal {
+	private pdfPath: string;
+	private onConfirm: () => void;
+
+	constructor(app: App, pdfPath: string, onConfirm: () => void) {
+		super(app);
+		this.pdfPath = pdfPath;
+		this.onConfirm = onConfirm;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		const basename = this.pdfPath.replace(/.*\//, '');
+		contentEl.createEl('h2', { text: 'Clear annotations?' });
+		contentEl.createEl('p', {
+			text: `Removes every stroke on every page of "${basename}". Undo restores them one page at a time.`,
+		});
+		const buttons = contentEl.createDiv({ cls: 'jot-modal-buttons' });
+		const clearBtn = buttons.createEl('button', { text: 'Clear' });
+		clearBtn.classList.add('mod-warning');
+		clearBtn.addEventListener('click', () => {
+			this.close();
+			this.onConfirm();
+		});
+		const cancelBtn = buttons.createEl('button', { text: 'Cancel' });
+		cancelBtn.addEventListener('click', () => this.close());
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
 }
 
 function createHoldIndicator(
