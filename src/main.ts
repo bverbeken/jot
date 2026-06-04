@@ -423,7 +423,7 @@ export default class JotPlugin extends Plugin {
 		const strokes = this.strokes.get(key);
 		if (!strokes || strokes.length === 0) return;
 		for (const stroke of strokes) {
-			drawStroke(ctx, stroke, canvas.width, canvas.height);
+			drawStroke(ctx, stroke, { width: canvas.width, height: canvas.height });
 		}
 	}
 
@@ -663,19 +663,16 @@ export default class JotPlugin extends Plugin {
 					inProgress,
 					this.toolState.color,
 					this.toolState.width,
-					canvas.width,
-					canvas.height,
+					{ width: canvas.width, height: canvas.height },
 				);
 			} else {
 				drawSegment(
 					ctx,
 					prev,
 					p,
-					this.toolState.tool,
 					this.toolState.color,
 					this.toolState.width,
-					canvas.width,
-					canvas.height,
+					{ width: canvas.width, height: canvas.height },
 				);
 			}
 			e.preventDefault();
