@@ -1,4 +1,4 @@
-import { App, Modal, Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
+import { Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
 import { PDFDocument } from 'pdf-lib';
 import { DEFAULT_TOOL_STATE, Palette, ToolState } from './palette';
 import { DEFAULT_SETTINGS, JotSettings, JotSettingTab } from './settings';
@@ -12,6 +12,8 @@ import {
 	strokeIntersects,
 } from './strokes';
 import { ExportChoiceModal, drawStrokesOnPdfPage } from './merge';
+import { ConfirmClearModal } from './clear';
+import { collectClearOperations, countStrokes, toUndoEntries } from './clear-ops';
 import { createHoldIndicator } from './hold-indicator';
 import { LongPressDetector } from './long-press';
 import { TwoFingerHoldDetector } from './two-finger-hold';
@@ -737,26 +739,21 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private startClearFlow(pdfPath: string) {
-		new ConfirmClearModal(this.app, pdfPath, () => {
-			this.clearAnnotations(pdfPath);
-		}).open();
+		new ConfirmClearModal(this.app, pdfPath, () => this.applyClear(pdfPath)).open();
 	}
 
-	private clearAnnotations(pdfPath: string) {
-		const prefix = pdfPath + '::';
-		let cleared = 0;
-		for (const [key, strokes] of this.strokes.entries()) {
-			if (!key.startsWith(prefix)) continue;
-			if (strokes.length === 0) continue;
-			this.pushUndo({ pdfPath, key, prevStrokes: [...strokes] });
-			this.strokes.set(key, []);
-			cleared += strokes.length;
+	private applyClear(pdfPath: string) {
+		const operations = collectClearOperations(pdfPath, this.strokes);
+		const totalStrokes = countStrokes(operations);
+		if (totalStrokes === 0) return;
+		for (const entry of toUndoEntries(pdfPath, operations)) {
+			this.pushUndo(entry);
+			this.strokes.set(entry.key, []);
 		}
-		if (cleared === 0) return;
 		this.scheduleSave(pdfPath);
 		this.redrawOverlaysForActivePdf();
 		new Notice(
-			`Jot: cleared ${cleared} stroke${cleared === 1 ? '' : 's'}. Undo to restore.`,
+			`Jot: cleared ${totalStrokes} stroke${totalStrokes === 1 ? '' : 's'}. Undo to restore.`,
 		);
 	}
 
@@ -767,40 +764,6 @@ export default class JotPlugin extends Plugin {
 		return leaf.view.containerEl.querySelector<HTMLCanvasElement>(
 			`canvas.${OVERLAY_CLASS}[${OVERLAY_KEY_ATTR}="${escaped}"]`,
 		);
-	}
-}
-
-class ConfirmClearModal extends Modal {
-	private pdfPath: string;
-	private onConfirm: () => void;
-
-	constructor(app: App, pdfPath: string, onConfirm: () => void) {
-		super(app);
-		this.pdfPath = pdfPath;
-		this.onConfirm = onConfirm;
-	}
-
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.empty();
-		const basename = this.pdfPath.replace(/.*\//, '');
-		contentEl.createEl('h2', { text: 'Clear annotations?' });
-		contentEl.createEl('p', {
-			text: `Removes every stroke on every page of "${basename}". Undo restores them one page at a time.`,
-		});
-		const buttons = contentEl.createDiv({ cls: 'jot-modal-buttons' });
-		const clearBtn = buttons.createEl('button', { text: 'Clear' });
-		clearBtn.classList.add('mod-warning');
-		clearBtn.addEventListener('click', () => {
-			this.close();
-			this.onConfirm();
-		});
-		const cancelBtn = buttons.createEl('button', { text: 'Cancel' });
-		cancelBtn.addEventListener('click', () => this.close());
-	}
-
-	onClose() {
-		this.contentEl.empty();
 	}
 }
 
