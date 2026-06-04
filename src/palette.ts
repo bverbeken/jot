@@ -17,6 +17,24 @@ export const DEFAULT_TOOL_STATE: ToolState = {
 	width: 0.0025,
 };
 
+// Per-tool memory: pen and highlighter each keep their own color and width
+// so switching tools restores what was last used for that specific tool.
+// Eraser has no meaningful color/width so it doesn't appear here.
+export interface ToolMemory {
+	color: string;
+	width: number;
+}
+
+export const DEFAULT_PEN_MEMORY: ToolMemory = {
+	color: '#000000',
+	width: 0.0025,
+};
+
+export const DEFAULT_HIGHLIGHTER_MEMORY: ToolMemory = {
+	color: '#f5c518',
+	width: 0.005,
+};
+
 export const PALETTE_COLORS = [
 	'#000000',
 	'#d33333',
@@ -141,11 +159,40 @@ export class Palette {
 	private flipDown = false;
 	private subArc: SubArc = null;
 	private handedness: Handedness = 'right';
+	private penMemory: ToolMemory = { ...DEFAULT_PEN_MEMORY };
+	private highlighterMemory: ToolMemory = { ...DEFAULT_HIGHLIGHTER_MEMORY };
 
-	constructor(initial: ToolState, onChange: OnChange, hooks: PaletteHooks) {
+	constructor(
+		initial: ToolState,
+		onChange: OnChange,
+		hooks: PaletteHooks,
+		memory?: { pen?: ToolMemory; highlighter?: ToolMemory },
+	) {
 		this.state = { ...initial };
 		this.onChange = onChange;
 		this.hooks = hooks;
+		if (memory?.pen) this.penMemory = { ...memory.pen };
+		if (memory?.highlighter) this.highlighterMemory = { ...memory.highlighter };
+		// Whichever tool we're starting on, sync its memory to the initial
+		// state so the next color/width pick lands on the right slot.
+		if (initial.tool === 'pen') {
+			this.penMemory = { color: initial.color, width: initial.width };
+		} else if (initial.tool === 'highlighter') {
+			this.highlighterMemory = { color: initial.color, width: initial.width };
+		}
+	}
+
+	getMemory(): { pen: ToolMemory; highlighter: ToolMemory } {
+		return {
+			pen: { ...this.penMemory },
+			highlighter: { ...this.highlighterMemory },
+		};
+	}
+
+	private memoryFor(tool: Tool): ToolMemory | null {
+		if (tool === 'pen') return this.penMemory;
+		if (tool === 'highlighter') return this.highlighterMemory;
+		return null;
 	}
 
 	getState(): ToolState {
@@ -453,6 +500,8 @@ export class Palette {
 			btn.setAttribute('aria-label', `Color ${color}`);
 			btn.addEventListener('click', () => {
 				this.state.color = color;
+				const mem = this.memoryFor(this.state.tool);
+				if (mem) mem.color = color;
 				this.onChange(this.state);
 				this.confirmAndDismiss(btn);
 			});
@@ -472,6 +521,14 @@ export class Palette {
 			btn.setAttribute('aria-label', t.label);
 			btn.addEventListener('click', () => {
 				this.state.tool = t.id;
+				// Pull in the new tool's remembered color and width so the
+				// next stroke uses what that tool was last set to. Eraser
+				// has no memory — keep the visible state where it was.
+				const mem = this.memoryFor(t.id);
+				if (mem) {
+					this.state.color = mem.color;
+					this.state.width = mem.width;
+				}
 				this.onChange(this.state);
 				this.confirmAndDismiss(btn);
 			});
@@ -497,6 +554,8 @@ export class Palette {
 			btn.appendChild(dot);
 			btn.addEventListener('click', () => {
 				this.state.width = w;
+				const mem = this.memoryFor(this.state.tool);
+				if (mem) mem.width = w;
 				this.onChange(this.state);
 				this.confirmAndDismiss(btn);
 			});

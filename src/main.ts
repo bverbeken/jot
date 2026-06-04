@@ -94,6 +94,9 @@ export default class JotPlugin extends Plugin {
 			(state) => {
 				this.toolState = state;
 				this.settings.toolState = state;
+				const mem = this.palette.getMemory();
+				this.settings.penState = mem.pen;
+				this.settings.highlighterState = mem.highlighter;
 				void this.saveSettings();
 			},
 			{
@@ -101,6 +104,10 @@ export default class JotPlugin extends Plugin {
 				onRedo: () => this.redoActivePdf(),
 				canUndo: () => this.canUndoActivePdf(),
 				canRedo: () => this.canRedoActivePdf(),
+			},
+			{
+				pen: this.settings.penState,
+				highlighter: this.settings.highlighterState,
 			},
 		);
 
