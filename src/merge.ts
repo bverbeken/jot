@@ -1,6 +1,7 @@
 import { App, Modal } from 'obsidian';
 import { LineCapStyle, PDFPage, rgb } from 'pdf-lib';
 import {
+	forEachSmoothSegment,
 	HIGHLIGHTER_ALPHA,
 	HIGHLIGHTER_WIDTH_FACTOR,
 	PRESSURE_MAX_FACTOR,
@@ -42,10 +43,7 @@ export function drawStrokesOnPdfPage(page: PDFPage, strokes: Stroke[]) {
 			}
 			continue;
 		}
-		for (let i = 1; i < stroke.points.length; i++) {
-			const a = stroke.points[i - 1];
-			const b = stroke.points[i];
-			if (!a || !b) continue;
+		forEachSmoothSegment(stroke.points, (a, b) => {
 			const avgPressure = (a.pressure + b.pressure) / 2;
 			const clamped = Math.max(0, Math.min(1, avgPressure));
 			const factor =
@@ -59,7 +57,7 @@ export function drawStrokesOnPdfPage(page: PDFPage, strokes: Stroke[]) {
 				opacity: 1,
 				lineCap: LineCapStyle.Round,
 			});
-		}
+		});
 	}
 }
 

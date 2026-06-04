@@ -703,6 +703,12 @@ export default class JotPlugin extends Plugin {
 					if (pdfPath) this.scheduleSave(pdfPath);
 				}
 				inProgress = null;
+				// Replace the rough live-drawn segments with the smoothed
+				// replay so the finished stroke matches the saved one. rAF
+				// defers past whatever Obsidian does on pointerup — a
+				// synchronous redraw here used to wipe the stroke (the
+				// regression we fixed in 0.2.1).
+				window.requestAnimationFrame(() => this.redrawPage(canvas));
 			}
 			try {
 				canvas.releasePointerCapture(e.pointerId);

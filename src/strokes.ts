@@ -85,6 +85,73 @@ export function drawHighlighterPolyline(
 	ctx.restore();
 }
 
+// How many sub-segments to use per quadratic Bézier curve when subdividing
+// for smooth rendering. Higher = smoother curve, more line draws.
+export const SMOOTH_SUBDIVISIONS = 6;
+
+export function midpoint(a: NormalizedPoint, b: NormalizedPoint): NormalizedPoint {
+	return {
+		x: (a.x + b.x) / 2,
+		y: (a.y + b.y) / 2,
+		pressure: (a.pressure + b.pressure) / 2,
+	};
+}
+
+// Subdivides a quadratic Bézier (p0, control, p2) into small straight
+// segments and emits each via the provided callback. Pressure is linearly
+// interpolated between the endpoints so the per-segment width follows the
+// same pressure curve as the original recorded points.
+export function subdivideQuadratic(
+	p0: NormalizedPoint,
+	control: NormalizedPoint,
+	p2: NormalizedPoint,
+	steps: number,
+	emit: (a: NormalizedPoint, b: NormalizedPoint) => void,
+) {
+	let prev = p0;
+	for (let i = 1; i <= steps; i++) {
+		const t = i / steps;
+		const inv = 1 - t;
+		const sub: NormalizedPoint = {
+			x: inv * inv * p0.x + 2 * inv * t * control.x + t * t * p2.x,
+			y: inv * inv * p0.y + 2 * inv * t * control.y + t * t * p2.y,
+			pressure: inv * p0.pressure + t * p2.pressure,
+		};
+		emit(prev, sub);
+		prev = sub;
+	}
+}
+
+// Walks a pen stroke and emits the smoothed segments. The curve passes
+// through midpoints of consecutive recorded points, using each recorded
+// point as the quadratic Bézier control — pulls the curve toward what the
+// user drew while rounding off the jagged inter-sample joints.
+export function forEachSmoothSegment(
+	points: NormalizedPoint[],
+	emit: (a: NormalizedPoint, b: NormalizedPoint) => void,
+) {
+	if (points.length < 2) return;
+	const first = points[0];
+	const second = points[1];
+	if (!first || !second) return;
+	if (points.length === 2) {
+		emit(first, second);
+		return;
+	}
+	let prevMid = midpoint(first, second);
+	emit(first, prevMid);
+	for (let i = 1; i < points.length - 1; i++) {
+		const ctrl = points[i];
+		const next = points[i + 1];
+		if (!ctrl || !next) continue;
+		const newMid = midpoint(ctrl, next);
+		subdivideQuadratic(prevMid, ctrl, newMid, SMOOTH_SUBDIVISIONS, emit);
+		prevMid = newMid;
+	}
+	const last = points[points.length - 1];
+	if (last) emit(prevMid, last);
+}
+
 export function drawStroke(
 	ctx: CanvasRenderingContext2D,
 	stroke: Stroke,
@@ -102,22 +169,9 @@ export function drawStroke(
 		);
 		return;
 	}
-	let prev: NormalizedPoint | null = null;
-	for (const p of stroke.points) {
-		if (prev) {
-			drawSegment(
-				ctx,
-				prev,
-				p,
-				stroke.tool,
-				stroke.color,
-				stroke.width,
-				width,
-				height,
-			);
-		}
-		prev = p;
-	}
+	forEachSmoothSegment(stroke.points, (a, b) => {
+		drawSegment(ctx, a, b, stroke.tool, stroke.color, stroke.width, width, height);
+	});
 }
 
 export function strokeIntersects(
