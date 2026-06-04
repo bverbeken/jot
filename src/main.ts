@@ -12,6 +12,7 @@ import {
 	strokeIntersects,
 } from './strokes';
 import { ExportChoiceModal, drawStrokesOnPdfPage } from './merge';
+import { UndoEntry, UndoHistory } from './undo';
 
 export type { Handedness } from './palette';
 
@@ -32,8 +33,6 @@ const LONG_PRESS_MOVE_PX = 15;
 // the pen because fingers are less precise.
 const TWO_FINGER_HOLD_MS = 300;
 const TWO_FINGER_MOVE_PX = 25;
-// Per-PDF cap on the undo stack so a long session can't unbound memory.
-const MAX_UNDO_DEPTH = 50;
 const INK_SUFFIX = '.ink.json';
 const SAVE_DEBOUNCE_MS = 250;
 const INK_FORMAT_VERSION = 2;
@@ -62,8 +61,7 @@ export default class JotPlugin extends Plugin {
 	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
 	private palette!: Palette;
 	settings: JotSettings = { ...DEFAULT_SETTINGS };
-	private undoStacks = new Map<string, UndoEntry[]>();
-	private redoStacks = new Map<string, UndoEntry[]>();
+	private history = new UndoHistory();
 
 	async onload() {
 		await this.loadSettings();
@@ -781,60 +779,38 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private pushUndo(entry: UndoEntry) {
-		const stack = this.undoStacks.get(entry.pdfPath) ?? [];
-		stack.push(entry);
-		if (stack.length > MAX_UNDO_DEPTH) stack.shift();
-		this.undoStacks.set(entry.pdfPath, stack);
-		// A fresh edit invalidates any forward history.
-		this.redoStacks.delete(entry.pdfPath);
+		this.history.push(entry);
 	}
 
 	canUndoActivePdf(): boolean {
 		const path = this.getActivePdfFilePath();
-		if (!path) return false;
-		return (this.undoStacks.get(path)?.length ?? 0) > 0;
+		return path !== null && this.history.canUndo(path);
 	}
 
 	canRedoActivePdf(): boolean {
 		const path = this.getActivePdfFilePath();
-		if (!path) return false;
-		return (this.redoStacks.get(path)?.length ?? 0) > 0;
+		return path !== null && this.history.canRedo(path);
 	}
 
 	undoActivePdf() {
 		const path = this.getActivePdfFilePath();
 		if (!path) return;
-		const stack = this.undoStacks.get(path);
-		if (!stack || stack.length === 0) return;
-		const entry = stack.pop();
-		if (!entry) return;
-		this.undoStacks.set(path, stack);
-		const current = this.strokes.get(entry.key) ?? [];
-		const redoStack = this.redoStacks.get(path) ?? [];
-		redoStack.push({ pdfPath: path, key: entry.key, prevStrokes: [...current] });
-		this.redoStacks.set(path, redoStack);
-		this.strokes.set(entry.key, [...entry.prevStrokes]);
-		const canvas = this.overlayForKey(entry.key);
-		if (canvas) this.redrawPage(canvas);
-		this.scheduleSave(path);
+		const entry = this.history.popUndo(path, (key) => this.strokes.get(key) ?? []);
+		if (entry) this.applyHistoryEntry(path, entry);
 	}
 
 	redoActivePdf() {
 		const path = this.getActivePdfFilePath();
 		if (!path) return;
-		const stack = this.redoStacks.get(path);
-		if (!stack || stack.length === 0) return;
-		const entry = stack.pop();
-		if (!entry) return;
-		this.redoStacks.set(path, stack);
-		const current = this.strokes.get(entry.key) ?? [];
-		const undoStack = this.undoStacks.get(path) ?? [];
-		undoStack.push({ pdfPath: path, key: entry.key, prevStrokes: [...current] });
-		this.undoStacks.set(path, undoStack);
+		const entry = this.history.popRedo(path, (key) => this.strokes.get(key) ?? []);
+		if (entry) this.applyHistoryEntry(path, entry);
+	}
+
+	private applyHistoryEntry(pdfPath: string, entry: UndoEntry) {
 		this.strokes.set(entry.key, [...entry.prevStrokes]);
 		const canvas = this.overlayForKey(entry.key);
 		if (canvas) this.redrawPage(canvas);
-		this.scheduleSave(path);
+		this.scheduleSave(pdfPath);
 	}
 
 	private async startMergeFlow(pdfPath: string) {
@@ -926,8 +902,7 @@ export default class JotPlugin extends Plugin {
 		for (const key of [...this.strokes.keys()]) {
 			if (key.startsWith(prefix)) this.strokes.delete(key);
 		}
-		this.undoStacks.delete(pdfPath);
-		this.redoStacks.delete(pdfPath);
+		this.history.dropPath(pdfPath);
 		// Redraw any currently-open overlays for this PDF so the user sees
 		// the cleared state immediately.
 		const leaf = this.getActivePdfLeaf();
@@ -979,12 +954,6 @@ export default class JotPlugin extends Plugin {
 			`canvas.${OVERLAY_CLASS}[${OVERLAY_KEY_ATTR}="${escaped}"]`,
 		);
 	}
-}
-
-interface UndoEntry {
-	pdfPath: string;
-	key: string;
-	prevStrokes: Stroke[];
 }
 
 class ConfirmClearModal extends Modal {
