@@ -1,15 +1,20 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
-import type { Handedness } from './palette';
+import { DEFAULT_TOOL_STATE, Handedness, ToolState } from './palette';
 import type JotPlugin from './main';
 
 export type { Handedness };
 
 export interface JotSettings {
 	handedness: Handedness;
+	// Last-used tool state — restored on plugin load so reopening Obsidian
+	// keeps you on the pen/color/width you were using rather than dumping
+	// you back on the hard-coded default.
+	toolState: ToolState;
 }
 
 export const DEFAULT_SETTINGS: JotSettings = {
 	handedness: 'right',
+	toolState: { ...DEFAULT_TOOL_STATE },
 };
 
 export class JotSettingTab extends PluginSettingTab {

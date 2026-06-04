@@ -13,7 +13,7 @@ export interface ToolState {
 
 export const DEFAULT_TOOL_STATE: ToolState = {
 	tool: 'pen',
-	color: '#d33333',
+	color: '#000000',
 	width: 0.0025,
 };
 

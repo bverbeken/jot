@@ -82,6 +82,8 @@ export default class JotPlugin extends Plugin {
 			this.toolState,
 			(state) => {
 				this.toolState = state;
+				this.settings.toolState = state;
+				void this.saveSettings();
 			},
 			{
 				onUndo: () => this.undoActivePdf(),
@@ -729,6 +731,9 @@ export default class JotPlugin extends Plugin {
 	async loadSettings() {
 		const stored = (await this.loadData()) as Partial<JotSettings> | null;
 		this.settings = { ...DEFAULT_SETTINGS, ...(stored ?? {}) };
+		// Restore the last-used tool/color/width so the user picks up
+		// where they left off instead of getting reset to the default.
+		this.toolState = { ...this.settings.toolState };
 	}
 
 	async saveSettings() {
