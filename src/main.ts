@@ -1,5 +1,4 @@
 import { Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
-import { PDFDocument } from 'pdf-lib';
 import { DEFAULT_TOOL_STATE, Palette, ToolState } from './palette';
 import { DEFAULT_SETTINGS, JotSettings, JotSettingTab } from './settings';
 import {
@@ -11,13 +10,13 @@ import {
 	Stroke,
 	strokeIntersects,
 } from './strokes';
-import { ExportChoiceModal, drawStrokesOnPdfPage } from './merge';
 import { ConfirmClearModal } from './clear';
 import { collectClearOperations, countStrokes, toUndoEntries } from './clear-ops';
 import { createHoldIndicator } from './hold-indicator';
 import { LongPressDetector } from './long-press';
 import { TwoFingerHoldDetector } from './two-finger-hold';
 import { isSidecarPath, pageKey, pdfPathFromKey, pdfPathFromSidecar } from './jot-file';
+import { MergeService } from './merge-service';
 import { SidecarStore } from './sidecar-store';
 import { StrokeStore } from './stroke-store';
 import { UndoEntry, UndoHistory } from './undo';
@@ -39,6 +38,7 @@ export default class JotPlugin extends Plugin {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
 	private strokes = new StrokeStore();
 	private sidecar!: SidecarStore;
+	private merge!: MergeService;
 	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
 	private palette!: Palette;
 	settings: JotSettings = { ...DEFAULT_SETTINGS };
@@ -47,6 +47,17 @@ export default class JotPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		this.sidecar = new SidecarStore(this.app.vault.adapter, this.strokes);
+		this.merge = new MergeService(
+			this.app,
+			this.app.vault.adapter,
+			this.strokes,
+			this.sidecar,
+			this.history,
+			{
+				ensureLoaded: (pdfPath) => this.ensureLoaded(pdfPath),
+				redrawOverlays: () => this.redrawOverlaysForActivePdf(),
+			},
+		);
 		this.addSettingTab(new JotSettingTab(this.app, this));
 		this.addCommand({
 			id: 'merge-notes-into-pdf',
@@ -54,7 +65,7 @@ export default class JotPlugin extends Plugin {
 			checkCallback: (checking) => {
 				const path = this.getActivePdfFilePath();
 				if (!path) return false;
-				if (!checking) void this.startMergeFlow(path);
+				if (!checking) void this.merge.start(path);
 				return true;
 			},
 		});
@@ -64,7 +75,7 @@ export default class JotPlugin extends Plugin {
 			checkCallback: (checking) => {
 				const path = this.getActivePdfFilePath();
 				if (!path) return false;
-				if (!this.pdfHasStrokes(path)) return false;
+				if (!this.strokes.hasFor(path)) return false;
 				if (!checking) this.startClearFlow(path);
 				return true;
 			},
@@ -562,83 +573,6 @@ export default class JotPlugin extends Plugin {
 		const canvas = this.overlayForKey(entry.key);
 		if (canvas) this.redrawPage(canvas);
 		this.scheduleSave(pdfPath);
-	}
-
-	private async startMergeFlow(pdfPath: string) {
-		await this.ensureLoaded(pdfPath);
-		const hasStrokes = this.pdfHasStrokes(pdfPath);
-		if (!hasStrokes) {
-			new Notice('Jot: no notes on this PDF to merge.');
-			return;
-		}
-		const copyTarget = await this.uniqueAnnotatedPath(pdfPath);
-		new ExportChoiceModal(this.app, copyTarget, (choice) => {
-			if (choice === 'cancel') return;
-			void this.runMerge(pdfPath, choice, copyTarget);
-		}).open();
-	}
-
-	private async runMerge(
-		pdfPath: string,
-		choice: 'overwrite' | 'copy',
-		copyTarget: string,
-	) {
-		try {
-			const outPath = await this.doMerge(pdfPath, choice, copyTarget);
-			if (choice === 'overwrite') {
-				await this.discardSidecar(pdfPath);
-			}
-			new Notice(`Jot: notes merged into ${outPath}`);
-		} catch (err) {
-			console.error(`${PLUGIN_LOG} merge failed:`, err);
-			new Notice(
-				`Jot: merge failed — ${err instanceof Error ? err.message : 'see console'}`,
-			);
-		}
-	}
-
-	private pdfHasStrokes(pdfPath: string): boolean {
-		return this.strokes.hasFor(pdfPath);
-	}
-
-	private async doMerge(
-		pdfPath: string,
-		choice: 'overwrite' | 'copy',
-		copyTarget: string,
-	): Promise<string> {
-		const bytes = await this.app.vault.adapter.readBinary(pdfPath);
-		const pdfDoc = await PDFDocument.load(bytes);
-		const pages = pdfDoc.getPages();
-		for (let i = 0; i < pages.length; i++) {
-			const page = pages[i];
-			if (!page) continue;
-			const pageNumber = i + 1;
-			const strokes = this.strokes.forPage(pdfPath, pageNumber);
-			if (strokes.length === 0) continue;
-			drawStrokesOnPdfPage(page, strokes);
-		}
-		const out = await pdfDoc.save();
-		const outPath = choice === 'overwrite' ? pdfPath : copyTarget;
-		await this.app.vault.adapter.writeBinary(outPath, out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer);
-		return outPath;
-	}
-
-	private async uniqueAnnotatedPath(pdfPath: string): Promise<string> {
-		const base = pdfPath.replace(/\.pdf$/i, '.annotated');
-		let candidate = `${base}.pdf`;
-		let n = 2;
-		while (await this.app.vault.adapter.exists(candidate)) {
-			candidate = `${base}.${n}.pdf`;
-			n++;
-		}
-		return candidate;
-	}
-
-	private async discardSidecar(pdfPath: string) {
-		await this.sidecar.discard(pdfPath);
-		this.strokes.clearFor(pdfPath);
-		this.history.dropPath(pdfPath);
-		this.redrawOverlaysForActivePdf();
 	}
 
 	private redrawOverlaysForActivePdf() {
