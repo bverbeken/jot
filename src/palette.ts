@@ -501,7 +501,7 @@ export class Palette {
 			try {
 				el.releasePointerCapture(e.pointerId);
 			} catch {
-				// noop
+				/* already released */
 			}
 		};
 		el.addEventListener('pointerup', endDrag, true);

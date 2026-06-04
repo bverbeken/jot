@@ -13,13 +13,7 @@ export type { Handedness };
 
 export interface JotSettings {
 	handedness: Handedness;
-	// Last-used tool state — restored on plugin load so reopening Obsidian
-	// keeps you on the pen/color/width you were using rather than dumping
-	// you back on the hard-coded default.
 	toolState: ToolState;
-	// Per-tool memory: pen and highlighter each remember their last color
-	// and width so switching tools brings back the right values for that
-	// specific tool.
 	penState: ToolMemory;
 	highlighterState: ToolMemory;
 }
