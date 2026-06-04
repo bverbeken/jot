@@ -17,15 +17,8 @@ import { collectClearOperations, countStrokes, toUndoEntries } from './clear-ops
 import { createHoldIndicator } from './hold-indicator';
 import { LongPressDetector } from './long-press';
 import { TwoFingerHoldDetector } from './two-finger-hold';
-import {
-	isSidecarPath,
-	isSupportedVersion,
-	jotPathFor,
-	pageKey,
-	parseJotText,
-	pdfPathFromKey,
-	pdfPathFromSidecar,
-} from './jot-file';
+import { isSidecarPath, pageKey, pdfPathFromKey, pdfPathFromSidecar } from './jot-file';
+import { SidecarStore } from './sidecar-store';
 import { StrokeStore } from './stroke-store';
 import { UndoEntry, UndoHistory } from './undo';
 
@@ -41,14 +34,11 @@ const LONG_PRESS_MS = 300;
 const LONG_PRESS_MOVE_PX = 15;
 const TWO_FINGER_HOLD_MS = 300;
 const TWO_FINGER_MOVE_PX = 25;
-const SELF_SAVE_SUPPRESS_MS = 1500;
-const SAVE_DEBOUNCE_MS = 250;
 
 export default class JotPlugin extends Plugin {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
 	private strokes = new StrokeStore();
-	private saveTimers = new Map<string, number>();
-	private recentSelfSaves = new Map<string, number>();
+	private sidecar!: SidecarStore;
 	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
 	private palette!: Palette;
 	settings: JotSettings = { ...DEFAULT_SETTINGS };
@@ -56,6 +46,7 @@ export default class JotPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		this.sidecar = new SidecarStore(this.app.vault.adapter, this.strokes);
 		this.addSettingTab(new JotSettingTab(this.app, this));
 		this.addCommand({
 			id: 'merge-notes-into-pdf',
@@ -118,7 +109,7 @@ export default class JotPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('modify', (file) => {
 				if (!isSidecarPath(file.path)) return;
-				if (this.isOwnRecentSave(file.path)) return;
+				if (this.sidecar.isOwnRecentSave(file.path)) return;
 				const pdfPath = pdfPathFromSidecar(file.path);
 				if (pdfPath) void this.reloadSidecar(pdfPath);
 			}),
@@ -135,64 +126,16 @@ export default class JotPlugin extends Plugin {
 	onunload() {
 		this.containerObservers.forEach((o) => o.disconnect());
 		this.containerObservers.clear();
-		this.saveTimers.forEach((id) => window.clearTimeout(id));
-		this.saveTimers.clear();
+		this.sidecar?.cancelAllPending();
 		this.palette?.hide();
 	}
 
 	private async ensureLoaded(pdfPath: string) {
-		await this.loadFromDisk(pdfPath);
-	}
-
-	private async loadFromDisk(pdfPath: string) {
-		const path = jotPathFor(pdfPath);
-		this.strokes.clearFor(pdfPath);
-		try {
-			if (!(await this.app.vault.adapter.exists(path))) return;
-			const text = await this.app.vault.adapter.read(path);
-			const parsed = parseJotText(text);
-			if (!parsed) return;
-			if (!isSupportedVersion(parsed.version)) {
-				console.warn(`${PLUGIN_LOG} ${path} has unknown version ${parsed.version}, skipping`);
-				return;
-			}
-			this.strokes.populateFromPayload(pdfPath, parsed.pages);
-		} catch (err) {
-			console.error(`${PLUGIN_LOG} loadFromDisk failed for ${path}:`, err);
-		}
-	}
-
-	private dropInMemoryStrokesFor(pdfPath: string) {
-		this.strokes.clearFor(pdfPath);
-	}
-
-	private async saveToDisk(pdfPath: string) {
-		const path = jotPathFor(pdfPath);
-		const payload = this.strokes.buildPayload(pdfPath);
-		try {
-			if (!payload) {
-				if (await this.app.vault.adapter.exists(path)) {
-					await this.app.vault.adapter.remove(path);
-				}
-				return;
-			}
-			await this.app.vault.adapter.write(path, JSON.stringify(payload, null, 2));
-			this.recentSelfSaves.set(path, Date.now());
-		} catch (err) {
-			console.error(`${PLUGIN_LOG} saveToDisk failed for ${path}:`, err);
-		}
-	}
-
-	private isOwnRecentSave(path: string): boolean {
-		const writtenAt = this.recentSelfSaves.get(path);
-		if (writtenAt === undefined) return false;
-		if (Date.now() - writtenAt >= SELF_SAVE_SUPPRESS_MS) return false;
-		this.recentSelfSaves.delete(path);
-		return true;
+		await this.sidecar.load(pdfPath);
 	}
 
 	private async reloadSidecar(pdfPath: string) {
-		await this.loadFromDisk(pdfPath);
+		await this.sidecar.load(pdfPath);
 		this.app.workspace.iterateAllLeaves((leaf) => {
 			const file = (leaf.view as { file?: TFile }).file;
 			if (file?.path !== pdfPath) return;
@@ -202,14 +145,8 @@ export default class JotPlugin extends Plugin {
 		});
 	}
 
-	private scheduleSave(pdfPath: string) {
-		const existing = this.saveTimers.get(pdfPath);
-		if (existing !== undefined) window.clearTimeout(existing);
-		const id = window.setTimeout(() => {
-			this.saveTimers.delete(pdfPath);
-			void this.saveToDisk(pdfPath);
-		}, SAVE_DEBOUNCE_MS);
-		this.saveTimers.set(pdfPath, id);
+	private scheduleSave(pdfPath: string): void {
+		this.sidecar.scheduleSave(pdfPath);
 	}
 
 	private getActivePdfLeaf(): WorkspaceLeaf | null {
@@ -698,15 +635,8 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private async discardSidecar(pdfPath: string) {
-		const path = jotPathFor(pdfPath);
-		try {
-			if (await this.app.vault.adapter.exists(path)) {
-				await this.app.vault.adapter.remove(path);
-			}
-		} catch (err) {
-			console.error(`${PLUGIN_LOG} could not delete sidecar ${path}:`, err);
-		}
-		this.dropInMemoryStrokesFor(pdfPath);
+		await this.sidecar.discard(pdfPath);
+		this.strokes.clearFor(pdfPath);
 		this.history.dropPath(pdfPath);
 		this.redrawOverlaysForActivePdf();
 	}
