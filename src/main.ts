@@ -18,18 +18,15 @@ import { createHoldIndicator } from './hold-indicator';
 import { LongPressDetector } from './long-press';
 import { TwoFingerHoldDetector } from './two-finger-hold';
 import {
-	buildJotPayload,
-	dropStrokesForPdf,
-	hasStrokesForPdf,
 	isSidecarPath,
 	isSupportedVersion,
 	jotPathFor,
-	migrateStroke,
 	pageKey,
 	parseJotText,
 	pdfPathFromKey,
 	pdfPathFromSidecar,
 } from './jot-file';
+import { StrokeStore } from './stroke-store';
 import { UndoEntry, UndoHistory } from './undo';
 
 export type { Handedness } from './palette';
@@ -49,7 +46,7 @@ const SAVE_DEBOUNCE_MS = 250;
 
 export default class JotPlugin extends Plugin {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
-	private strokes = new Map<string, Stroke[]>();
+	private strokes = new StrokeStore();
 	private saveTimers = new Map<string, number>();
 	private recentSelfSaves = new Map<string, number>();
 	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
@@ -149,7 +146,7 @@ export default class JotPlugin extends Plugin {
 
 	private async loadFromDisk(pdfPath: string) {
 		const path = jotPathFor(pdfPath);
-		dropStrokesForPdf(pdfPath, this.strokes);
+		this.strokes.clearFor(pdfPath);
 		try {
 			if (!(await this.app.vault.adapter.exists(path))) return;
 			const text = await this.app.vault.adapter.read(path);
@@ -159,27 +156,19 @@ export default class JotPlugin extends Plugin {
 				console.warn(`${PLUGIN_LOG} ${path} has unknown version ${parsed.version}, skipping`);
 				return;
 			}
-			this.populateStrokesFromPayload(pdfPath, parsed.pages);
+			this.strokes.populateFromPayload(pdfPath, parsed.pages);
 		} catch (err) {
 			console.error(`${PLUGIN_LOG} loadFromDisk failed for ${path}:`, err);
 		}
 	}
 
 	private dropInMemoryStrokesFor(pdfPath: string) {
-		dropStrokesForPdf(pdfPath, this.strokes);
-	}
-
-	private populateStrokesFromPayload(pdfPath: string, pages: Record<string, Stroke[]>) {
-		for (const [pageNumStr, strokes] of Object.entries(pages)) {
-			const pageNumber = parseInt(pageNumStr, 10);
-			if (Number.isNaN(pageNumber)) continue;
-			this.strokes.set(pageKey(pdfPath, pageNumber), strokes.map(migrateStroke));
-		}
+		this.strokes.clearFor(pdfPath);
 	}
 
 	private async saveToDisk(pdfPath: string) {
 		const path = jotPathFor(pdfPath);
-		const payload = buildJotPayload(pdfPath, this.strokes);
+		const payload = this.strokes.buildPayload(pdfPath);
 		try {
 			if (!payload) {
 				if (await this.app.vault.adapter.exists(path)) {
@@ -359,9 +348,7 @@ export default class JotPlugin extends Plugin {
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
 		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
 		if (!key) return;
-		const strokes = this.strokes.get(key);
-		if (!strokes || strokes.length === 0) return;
-		for (const stroke of strokes) {
+		for (const stroke of this.strokes.forKey(key)) {
 			drawStroke(ctx, stroke, { width: canvas.width, height: canvas.height });
 		}
 	}
@@ -508,7 +495,7 @@ export default class JotPlugin extends Plugin {
 		if (!key) return null;
 		const pdfPath = pdfPathFromKey(key);
 		if (!pdfPath) return null;
-		return { pdfPath, key, prevStrokes: [...(this.strokes.get(key) ?? [])] };
+		return { pdfPath, key, prevStrokes: [...(this.strokes.forKey(key))] };
 	}
 
 	private continueDrawingStroke(
@@ -555,18 +542,16 @@ export default class JotPlugin extends Plugin {
 		const points = state.drawingPoints();
 		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
 		if (key && points.length > 0) {
-			const existing = this.strokes.get(key) ?? [];
 			const pdfPath = pdfPathFromKey(key);
 			if (pdfPath) {
-				this.pushUndo({ pdfPath, key, prevStrokes: [...existing] });
+				this.pushUndo({ pdfPath, key, prevStrokes: [...this.strokes.forKey(key)] });
 			}
-			existing.push({
+			this.strokes.appendToKey(key, {
 				points,
 				color: this.toolState.color,
 				width: this.toolState.width,
 				tool: this.toolState.tool,
 			});
-			this.strokes.set(key, existing);
 			if (pdfPath) this.scheduleSave(pdfPath);
 		}
 		state.reset();
@@ -585,8 +570,8 @@ export default class JotPlugin extends Plugin {
 	private eraseAt(canvas: HTMLCanvasElement, e: PointerEvent): boolean {
 		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
 		if (!key) return false;
-		const strokes = this.strokes.get(key);
-		if (!strokes || strokes.length === 0) return false;
+		const strokes = this.strokes.forKey(key);
+		if (strokes.length === 0) return false;
 		const rect = canvas.getBoundingClientRect();
 		const x = (e.clientX - rect.left) / rect.width;
 		const y = (e.clientY - rect.top) / rect.height;
@@ -600,7 +585,7 @@ export default class JotPlugin extends Plugin {
 			}
 		}
 		if (removed === 0) return false;
-		this.strokes.set(key, kept);
+		this.strokes.setForKey(key, kept);
 		this.redrawPage(canvas);
 		const pdfPath = pdfPathFromKey(key);
 		if (pdfPath) this.scheduleSave(pdfPath);
@@ -624,19 +609,19 @@ export default class JotPlugin extends Plugin {
 	undoActivePdf() {
 		const path = this.getActivePdfFilePath();
 		if (!path) return;
-		const entry = this.history.popUndo(path, (key) => this.strokes.get(key) ?? []);
+		const entry = this.history.popUndo(path, (key) => this.strokes.forKey(key));
 		if (entry) this.applyHistoryEntry(path, entry);
 	}
 
 	redoActivePdf() {
 		const path = this.getActivePdfFilePath();
 		if (!path) return;
-		const entry = this.history.popRedo(path, (key) => this.strokes.get(key) ?? []);
+		const entry = this.history.popRedo(path, (key) => this.strokes.forKey(key));
 		if (entry) this.applyHistoryEntry(path, entry);
 	}
 
 	private applyHistoryEntry(pdfPath: string, entry: UndoEntry) {
-		this.strokes.set(entry.key, [...entry.prevStrokes]);
+		this.strokes.setForKey(entry.key, [...entry.prevStrokes]);
 		const canvas = this.overlayForKey(entry.key);
 		if (canvas) this.redrawPage(canvas);
 		this.scheduleSave(pdfPath);
@@ -676,7 +661,7 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private pdfHasStrokes(pdfPath: string): boolean {
-		return hasStrokesForPdf(pdfPath, this.strokes);
+		return this.strokes.hasFor(pdfPath);
 	}
 
 	private async doMerge(
@@ -691,7 +676,7 @@ export default class JotPlugin extends Plugin {
 			const page = pages[i];
 			if (!page) continue;
 			const pageNumber = i + 1;
-			const strokes = this.strokes.get(pageKey(pdfPath, pageNumber)) ?? [];
+			const strokes = this.strokes.forPage(pdfPath, pageNumber);
 			if (strokes.length === 0) continue;
 			drawStrokesOnPdfPage(page, strokes);
 		}
@@ -739,12 +724,12 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private applyClear(pdfPath: string) {
-		const operations = collectClearOperations(pdfPath, this.strokes);
+		const operations = collectClearOperations(pdfPath, this.strokes.asMap());
 		const totalStrokes = countStrokes(operations);
 		if (totalStrokes === 0) return;
 		for (const entry of toUndoEntries(pdfPath, operations)) {
 			this.pushUndo(entry);
-			this.strokes.set(entry.key, []);
+			this.strokes.clearKey(entry.key);
 		}
 		this.scheduleSave(pdfPath);
 		this.redrawOverlaysForActivePdf();
