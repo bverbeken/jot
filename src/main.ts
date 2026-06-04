@@ -35,25 +35,17 @@ const PAGE_ANCHOR_CLASS = 'jot-page-anchor';
 const PASSTHROUGH_CLASS = 'jot-passthrough';
 const OVERLAY_KEY_ATTR = 'data-jot-key';
 const PAGE_OBSERVED_ATTR = 'data-jot-observed';
-// Stationary press duration before the palette pops, and the movement
-// tolerance for what counts as "stationary" in screen pixels. The tolerance
-// needs to be generous on iPad: Apple Pencil reports high-frequency samples
-// with natural jitter, so 5 px almost always tripped before the timer fired.
 const LONG_PRESS_MS = 300;
 const LONG_PRESS_MOVE_PX = 15;
-// Two-finger stationary hold as an alternative palette trigger — useful when
-// the pen isn't in the user's hand. More generous movement tolerance than
-// the pen because fingers are less precise.
 const TWO_FINGER_HOLD_MS = 300;
 const TWO_FINGER_MOVE_PX = 25;
+const SELF_SAVE_SUPPRESS_MS = 1500;
 const SAVE_DEBOUNCE_MS = 250;
 
 export default class JotPlugin extends Plugin {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
 	private strokes = new Map<string, Stroke[]>();
 	private saveTimers = new Map<string, number>();
-	// Sidecar paths we wrote ourselves, with a timestamp. The vault.on(
-	// 'modify') watcher checks this to suppress reload-on-our-own-save.
 	private recentSelfSaves = new Map<string, number>();
 	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
 	private palette!: Palette;
@@ -121,24 +113,15 @@ export default class JotPlugin extends Plugin {
 			}),
 		);
 
-		// Reload the sidecar when an external change arrives (Obsidian Sync,
-		// iCloud, etc. push a new .ink.json). Filters to our sidecar files
-		// and skips events triggered by our own writes via the recent-self-
-		// write timestamp set in saveToDisk.
 		this.registerEvent(
 			this.app.vault.on('modify', (file) => {
 				if (!file.path.endsWith(INK_SUFFIX)) return;
-				const lastSelf = this.recentSelfSaves.get(file.path);
-				if (lastSelf !== undefined && Date.now() - lastSelf < 1500) {
-					this.recentSelfSaves.delete(file.path);
-					return;
-				}
+				if (this.isOwnRecentSave(file.path)) return;
 				const pdfPath = file.path.slice(0, -INK_SUFFIX.length);
 				void this.reloadSidecar(pdfPath);
 			}),
 		);
 
-		// Pick up an already-open PDF on plugin enable / Obsidian restart.
 		this.app.workspace.onLayoutReady(async () => {
 			const filePath = this.getActivePdfFilePath();
 			if (!filePath) return;
@@ -209,10 +192,16 @@ export default class JotPlugin extends Plugin {
 		}
 	}
 
+	private isOwnRecentSave(path: string): boolean {
+		const writtenAt = this.recentSelfSaves.get(path);
+		if (writtenAt === undefined) return false;
+		if (Date.now() - writtenAt >= SELF_SAVE_SUPPRESS_MS) return false;
+		this.recentSelfSaves.delete(path);
+		return true;
+	}
+
 	private async reloadSidecar(pdfPath: string) {
 		await this.loadFromDisk(pdfPath);
-		// Redraw every open canvas for this PDF so the live view picks up
-		// the externally-applied changes without needing a tab close.
 		this.app.workspace.iterateAllLeaves((leaf) => {
 			const file = (leaf.view as { file?: TFile }).file;
 			if (file?.path !== pdfPath) return;
@@ -267,11 +256,6 @@ export default class JotPlugin extends Plugin {
 		const container = leaf.view.containerEl;
 
 		this.upgradePages(container, filePath);
-
-		// One container observer per leaf — looks up the leaf's current file
-		// path at fire time so it stays correct when the user navigates within
-		// the same leaf. Without this guard, layout-change would attach a fresh
-		// observer on every call and the accumulated set would freeze the UI.
 		if (this.containerObservers.has(leaf)) return;
 		const obs = new MutationObserver(() => {
 			const currentPath = this.filePathForLeaf(leaf);
@@ -307,34 +291,19 @@ export default class JotPlugin extends Plugin {
 				this.redrawPage(existing);
 				return;
 			}
-			// Stale overlay from a previous PDF — drop it and build fresh so
-			// the wired event handlers reference the current file's key.
 			existing.remove();
 		}
 
-		// PDF.js doesn't guarantee .page has a positioned context; this class
-		// applies position:relative so our absolutely-positioned overlay anchors
-		// to the page rather than to an ancestor.
 		page.classList.add(PAGE_ANCHOR_CLASS);
-
 		const overlay = activeDocument.createElement('canvas');
 		overlay.className = OVERLAY_CLASS;
 		overlay.setAttribute(OVERLAY_KEY_ATTR, key);
-		// touch-action stays at the default 'auto' so finger touches scroll
-		// the PDF view normally; we ignore them at the pointerdown handler.
-		// Apple Pencil fires pointerType='pen' which is not affected by
-		// touch-action.
-
 		this.sizeOverlayToPage(overlay, page);
 		page.appendChild(overlay);
-
 		this.disableTextLayerInteraction(page);
 		this.wirePointerEvents(overlay);
 		this.redrawPage(overlay);
 
-		// Page-level observers are at most one per .page element across the
-		// plugin's lifetime — guarded by a data attribute so they don't pile
-		// up when overlays are replaced for a different PDF.
 		if (page.getAttribute(PAGE_OBSERVED_ATTR) === '1') return;
 		page.setAttribute(PAGE_OBSERVED_ATTR, '1');
 
@@ -419,7 +388,7 @@ export default class JotPlugin extends Plugin {
 		const releasePointerCapture = () => {
 			if (activePointerId === null) return;
 			try { canvas.releasePointerCapture(activePointerId); } catch {
-				// pointer was already released
+				/* already released */
 			}
 			activePointerId = null;
 		};
@@ -604,8 +573,6 @@ export default class JotPlugin extends Plugin {
 	async loadSettings() {
 		const stored = (await this.loadData()) as Partial<JotSettings> | null;
 		this.settings = { ...DEFAULT_SETTINGS, ...(stored ?? {}) };
-		// Restore the last-used tool/color/width so the user picks up
-		// where they left off instead of getting reset to the default.
 		this.toolState = { ...this.settings.toolState };
 	}
 
@@ -756,21 +723,17 @@ export default class JotPlugin extends Plugin {
 		} catch (err) {
 			console.error(`${PLUGIN_LOG} could not delete sidecar ${path}:`, err);
 		}
-		// Drop in-memory strokes for this PDF and reset its undo history so a
-		// fresh editing session starts on top of the now-baked PDF.
-		const prefix = pdfPath + '::';
-		for (const key of [...this.strokes.keys()]) {
-			if (key.startsWith(prefix)) this.strokes.delete(key);
-		}
+		this.dropInMemoryStrokesFor(pdfPath);
 		this.history.dropPath(pdfPath);
-		// Redraw any currently-open overlays for this PDF so the user sees
-		// the cleared state immediately.
+		this.redrawOverlaysForActivePdf();
+	}
+
+	private redrawOverlaysForActivePdf() {
 		const leaf = this.getActivePdfLeaf();
-		if (leaf) {
-			leaf.view.containerEl
-				.querySelectorAll<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`)
-				.forEach((canvas) => this.redrawPage(canvas));
-		}
+		if (!leaf) return;
+		leaf.view.containerEl
+			.querySelectorAll<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`)
+			.forEach((canvas) => this.redrawPage(canvas));
 	}
 
 	private startClearFlow(pdfPath: string) {
@@ -785,22 +748,13 @@ export default class JotPlugin extends Plugin {
 		for (const [key, strokes] of this.strokes.entries()) {
 			if (!key.startsWith(prefix)) continue;
 			if (strokes.length === 0) continue;
-			// One undo entry per page so undo restores them one page at a
-			// time — the existing UndoEntry shape is single-key, and bulk
-			// clear is rare enough not to warrant a new multi-page entry
-			// type.
 			this.pushUndo({ pdfPath, key, prevStrokes: [...strokes] });
 			this.strokes.set(key, []);
 			cleared += strokes.length;
 		}
 		if (cleared === 0) return;
 		this.scheduleSave(pdfPath);
-		const leaf = this.getActivePdfLeaf();
-		if (leaf) {
-			leaf.view.containerEl
-				.querySelectorAll<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`)
-				.forEach((canvas) => this.redrawPage(canvas));
-		}
+		this.redrawOverlaysForActivePdf();
 		new Notice(
 			`Jot: cleared ${cleared} stroke${cleared === 1 ? '' : 's'}. Undo to restore.`,
 		);
