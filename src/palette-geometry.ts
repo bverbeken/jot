@@ -25,7 +25,8 @@ const TILT_RAD = (TILT_OFFSET_DEG * Math.PI) / 180;
 
 export function arcCenterAngle(handedness: Handedness, flipDown: boolean): number {
 	const base = flipDown ? STRAIGHT_DOWN_RAD : STRAIGHT_UP_RAD;
-	return handedness === 'right' ? base - TILT_RAD : base + TILT_RAD;
+	const awayFromHand = handedness === 'right' ? -TILT_RAD : TILT_RAD;
+	return flipDown ? base - awayFromHand : base + awayFromHand;
 }
 
 export function arcOrigin(handedness: Handedness, flipDown: boolean): Offset {

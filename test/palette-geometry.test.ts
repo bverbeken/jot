@@ -23,11 +23,11 @@ describe('arcCenterAngle', () => {
 	it('places a left-handed upward fan 20° right of straight up at 290°', () => {
 		expect(toDeg(arcCenterAngle('left', false))).toBeCloseTo(290);
 	});
-	it('rotates a right-handed downward fan 20° back from straight down to 70°', () => {
-		expect(toDeg(arcCenterAngle('right', true))).toBeCloseTo(70);
+	it('mirrors the right-handed downward fan to 110° (still tilted away from the pen hand)', () => {
+		expect(toDeg(arcCenterAngle('right', true))).toBeCloseTo(110);
 	});
-	it('rotates a left-handed downward fan 20° forward from straight down to 110°', () => {
-		expect(toDeg(arcCenterAngle('left', true))).toBeCloseTo(110);
+	it('mirrors the left-handed downward fan to 70° (still tilted away from the pen hand)', () => {
+		expect(toDeg(arcCenterAngle('left', true))).toBeCloseTo(70);
 	});
 });
 
