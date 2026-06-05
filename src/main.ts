@@ -85,6 +85,7 @@ export default class JotPlugin extends Plugin {
 				onRedo: () => this.undoController.redo(),
 				canUndo: () => this.undoController.canUndo(),
 				canRedo: () => this.undoController.canRedo(),
+				getColors: () => this.settings.colors,
 			},
 			{
 				pen: this.settings.penState,

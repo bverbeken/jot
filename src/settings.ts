@@ -4,6 +4,7 @@ import {
 	DEFAULT_PEN_MEMORY,
 	DEFAULT_TOOL_STATE,
 	Handedness,
+	PALETTE_COLORS,
 	ToolMemory,
 	ToolState,
 } from './palette';
@@ -16,6 +17,7 @@ export interface JotSettings {
 	toolState: ToolState;
 	penState: ToolMemory;
 	highlighterState: ToolMemory;
+	colors: string[];
 }
 
 export const DEFAULT_SETTINGS: JotSettings = {
@@ -23,6 +25,7 @@ export const DEFAULT_SETTINGS: JotSettings = {
 	toolState: { ...DEFAULT_TOOL_STATE },
 	penState: { ...DEFAULT_PEN_MEMORY },
 	highlighterState: { ...DEFAULT_HIGHLIGHTER_MEMORY },
+	colors: [...PALETTE_COLORS],
 };
 
 export class JotSettingTab extends PluginSettingTab {
@@ -50,6 +53,35 @@ export class JotSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.handedness = value as Handedness;
 						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Palette colors')
+			.setDesc('The seven swatches shown in the color sub-arc.')
+			.setHeading();
+
+		PALETTE_COLORS.forEach((_, index) => {
+			new Setting(containerEl)
+				.setName(`Color ${index + 1}`)
+				.addColorPicker((picker) =>
+					picker
+						.setValue(this.plugin.settings.colors[index] ?? PALETTE_COLORS[index]!)
+						.onChange(async (value) => {
+							this.plugin.settings.colors[index] = value;
+							await this.plugin.saveSettings();
+						}),
+				);
+		});
+
+		new Setting(containerEl)
+			.addButton((button) =>
+				button
+					.setButtonText('Reset palette colors to defaults')
+					.onClick(async () => {
+						this.plugin.settings.colors = [...PALETTE_COLORS];
+						await this.plugin.saveSettings();
+						this.display();
 					}),
 			);
 	}

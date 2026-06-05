@@ -33,8 +33,7 @@ const makeElement = (left = '100px', top = '200px'): HTMLElement => {
 	el.style.left = left;
 	el.style.top = top;
 	document.body.appendChild(el);
-	(el as HTMLElement & { setPointerCapture: ReturnType<typeof vi.fn> }).setPointerCapture = vi.fn();
-	(el as HTMLElement & { releasePointerCapture: ReturnType<typeof vi.fn> }).releasePointerCapture = vi.fn();
+	Object.assign(el, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() });
 	return el;
 };
 
@@ -140,8 +139,7 @@ describe('DragHandler', () => {
 	it('handles a left/top that was not previously set, treating them as 0', () => {
 		const el = document.createElement('div');
 		document.body.appendChild(el);
-		(el as HTMLElement & { setPointerCapture: ReturnType<typeof vi.fn> }).setPointerCapture = vi.fn();
-		(el as HTMLElement & { releasePointerCapture: ReturnType<typeof vi.fn> }).releasePointerCapture = vi.fn();
+		Object.assign(el, { setPointerCapture: vi.fn(), releasePointerCapture: vi.fn() });
 		new DragHandler(el).attach();
 		dispatch(el, 'pointerdown', { pointerType: 'mouse', clientX: 100, clientY: 100 });
 		dispatch(el, 'pointermove', { pointerType: 'mouse', clientX: 150, clientY: 130 });

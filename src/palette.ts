@@ -79,6 +79,7 @@ export interface PaletteHooks {
 	onRedo: () => void;
 	canUndo: () => boolean;
 	canRedo: () => boolean;
+	getColors?: () => string[];
 }
 
 const SUB_SLOT_OF: Record<Exclude<SubArc, null>, number> = {
@@ -350,8 +351,12 @@ export class Palette {
 		return path;
 	}
 
+	private currentColors(): string[] {
+		return this.hooks.getColors?.() ?? PALETTE_COLORS;
+	}
+
 	private subArcItemCount(): number {
-		if (this.subArc === 'color') return PALETTE_COLORS.length;
+		if (this.subArc === 'color') return this.currentColors().length;
 		if (this.subArc === 'tool') return TOOLS.length;
 		if (this.subArc === 'width') return PALETTE_WIDTHS.length;
 		return 0;
@@ -359,7 +364,7 @@ export class Palette {
 
 	private renderSubColors(host: HTMLElement, doc: Document) {
 		const subCenter = slotAngle(COLOR_SLOT_INDEX, this.handedness, this.flipDown);
-		const colors = PALETTE_COLORS;
+		const colors = this.currentColors();
 		colors.forEach((color, index) => {
 			const off = this.subSlot(index, colors.length, subCenter);
 			const btn = this.makeItem(doc, 'jot-palette-color', off);
