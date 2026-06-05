@@ -1,10 +1,9 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
+import { Notice, Plugin, TFile } from 'obsidian';
 import { DEFAULT_TOOL_STATE, Palette, ToolState } from './palette';
 import { DEFAULT_SETTINGS, JotSettings, JotSettingTab } from './settings';
 import {
 	drawHighlighterPolyline,
 	drawSegment,
-	drawStroke,
 	ERASE_RADIUS,
 	NormalizedPoint,
 	Stroke,
@@ -15,8 +14,9 @@ import { collectClearOperations, countStrokes, toUndoEntries } from './clear-ops
 import { createHoldIndicator } from './hold-indicator';
 import { LongPressDetector } from './long-press';
 import { TwoFingerHoldDetector } from './two-finger-hold';
-import { isSidecarPath, pageKey, pdfPathFromKey, pdfPathFromSidecar } from './jot-file';
+import { isSidecarPath, pdfPathFromKey, pdfPathFromSidecar } from './jot-file';
 import { MergeService } from './merge-service';
+import { OVERLAY_KEY_ATTR, OverlayManager } from './overlay-manager';
 import { SidecarStore } from './sidecar-store';
 import { StrokeStore } from './stroke-store';
 import { UndoEntry, UndoHistory } from './undo';
@@ -24,21 +24,16 @@ import { UndoEntry, UndoHistory } from './undo';
 export type { Handedness } from './palette';
 
 const PLUGIN_LOG = '[jot]';
-const OVERLAY_CLASS = 'jot-overlay';
-const PAGE_ANCHOR_CLASS = 'jot-page-anchor';
-const PASSTHROUGH_CLASS = 'jot-passthrough';
-const OVERLAY_KEY_ATTR = 'data-jot-key';
-const PAGE_OBSERVED_ATTR = 'data-jot-observed';
 const LONG_PRESS_MS = 300;
 const LONG_PRESS_MOVE_PX = 15;
 const TWO_FINGER_HOLD_MS = 300;
 const TWO_FINGER_MOVE_PX = 25;
 
 export default class JotPlugin extends Plugin {
-	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
 	private strokes = new StrokeStore();
 	private sidecar!: SidecarStore;
 	private merge!: MergeService;
+	private overlays!: OverlayManager;
 	private toolState: ToolState = { ...DEFAULT_TOOL_STATE };
 	private palette!: Palette;
 	settings: JotSettings = { ...DEFAULT_SETTINGS };
@@ -47,6 +42,9 @@ export default class JotPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		this.sidecar = new SidecarStore(this.app.vault.adapter, this.strokes);
+		this.overlays = new OverlayManager(this.app, this.strokes, (canvas) =>
+			this.wirePointerEvents(canvas),
+		);
 		this.merge = new MergeService(
 			this.app,
 			this.app.vault.adapter,
@@ -55,7 +53,7 @@ export default class JotPlugin extends Plugin {
 			this.history,
 			{
 				ensureLoaded: (pdfPath) => this.ensureLoaded(pdfPath),
-				redrawOverlays: () => this.redrawOverlaysForActivePdf(),
+				redrawOverlays: () => this.overlays.redrawOverlaysForActivePdf(),
 			},
 		);
 		this.addSettingTab(new JotSettingTab(this.app, this));
@@ -63,7 +61,7 @@ export default class JotPlugin extends Plugin {
 			id: 'merge-notes-into-pdf',
 			name: 'Merge notes into PDF',
 			checkCallback: (checking) => {
-				const path = this.getActivePdfFilePath();
+				const path = this.overlays.getActivePdfFilePath();
 				if (!path) return false;
 				if (!checking) void this.merge.start(path);
 				return true;
@@ -73,7 +71,7 @@ export default class JotPlugin extends Plugin {
 			id: 'clear-annotations',
 			name: 'Clear annotations on this PDF',
 			checkCallback: (checking) => {
-				const path = this.getActivePdfFilePath();
+				const path = this.overlays.getActivePdfFilePath();
 				if (!path) return false;
 				if (!this.strokes.hasFor(path)) return false;
 				if (!checking) this.startClearFlow(path);
@@ -106,14 +104,14 @@ export default class JotPlugin extends Plugin {
 			this.app.workspace.on('file-open', async (file: TFile | null) => {
 				if (file?.extension !== 'pdf') return;
 				await this.ensureLoaded(file.path);
-				window.setTimeout(() => this.attachOverlayToActivePdfView(), 300);
+				window.setTimeout(() => this.overlays.attachToActivePdf(), 300);
 			}),
 		);
 
 		this.registerEvent(
 			this.app.workspace.on('layout-change', () => {
-				this.pruneClosedLeafObservers();
-				this.attachOverlayToActivePdfView();
+				this.overlays.pruneClosedObservers();
+				this.overlays.attachToActivePdf();
 			}),
 		);
 
@@ -127,16 +125,15 @@ export default class JotPlugin extends Plugin {
 		);
 
 		this.app.workspace.onLayoutReady(async () => {
-			const filePath = this.getActivePdfFilePath();
+			const filePath = this.overlays.getActivePdfFilePath();
 			if (!filePath) return;
 			await this.ensureLoaded(filePath);
-			this.attachOverlayToActivePdfView();
+			this.overlays.attachToActivePdf();
 		});
 	}
 
 	onunload() {
-		this.containerObservers.forEach((o) => o.disconnect());
-		this.containerObservers.clear();
+		this.overlays?.disconnectAll();
 		this.sidecar?.cancelAllPending();
 		this.palette?.hide();
 	}
@@ -147,158 +144,11 @@ export default class JotPlugin extends Plugin {
 
 	private async reloadSidecar(pdfPath: string) {
 		await this.sidecar.load(pdfPath);
-		this.app.workspace.iterateAllLeaves((leaf) => {
-			const file = (leaf.view as { file?: TFile }).file;
-			if (file?.path !== pdfPath) return;
-			leaf.view.containerEl
-				.querySelectorAll<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`)
-				.forEach((canvas) => this.redrawPage(canvas));
-		});
+		this.overlays.redrawOverlaysForPdf(pdfPath);
 	}
 
 	private scheduleSave(pdfPath: string): void {
 		this.sidecar.scheduleSave(pdfPath);
-	}
-
-	private getActivePdfLeaf(): WorkspaceLeaf | null {
-		const leaf = this.app.workspace.getMostRecentLeaf();
-		if (!leaf) return null;
-		const viewType = leaf.view.getViewType?.();
-		if (viewType !== 'pdf') return null;
-		return leaf;
-	}
-
-	private getActivePdfFilePath(): string | null {
-		const leaf = this.getActivePdfLeaf();
-		if (!leaf) return null;
-		const file = (leaf.view as { file?: TFile }).file;
-		return file?.path ?? null;
-	}
-
-	private pruneClosedLeafObservers() {
-		if (this.containerObservers.size === 0) return;
-		const live = new Set<WorkspaceLeaf>();
-		this.app.workspace.iterateAllLeaves((leaf) => live.add(leaf));
-		for (const [leaf, observer] of this.containerObservers) {
-			if (!live.has(leaf)) {
-				observer.disconnect();
-				this.containerObservers.delete(leaf);
-			}
-		}
-	}
-
-	private attachOverlayToActivePdfView() {
-		const leaf = this.getActivePdfLeaf();
-		if (!leaf) return;
-		const filePath = this.getActivePdfFilePath();
-		if (!filePath) return;
-		const container = leaf.view.containerEl;
-
-		this.upgradePages(container, filePath);
-		if (this.containerObservers.has(leaf)) return;
-		const obs = new MutationObserver(() => {
-			const currentPath = this.filePathForLeaf(leaf);
-			if (!currentPath) return;
-			this.upgradePages(container, currentPath);
-		});
-		obs.observe(container, { childList: true, subtree: true });
-		this.containerObservers.set(leaf, obs);
-	}
-
-	private filePathForLeaf(leaf: WorkspaceLeaf): string | null {
-		const file = (leaf.view as { file?: TFile }).file;
-		return file?.path ?? null;
-	}
-
-	private upgradePages(container: HTMLElement, filePath: string) {
-		const pages = container.querySelectorAll<HTMLElement>('.page');
-		pages.forEach((page) => this.ensureOverlayOnPage(page, filePath));
-	}
-
-	private ensureOverlayOnPage(page: HTMLElement, filePath: string) {
-		const pageNumberAttr = page.getAttribute('data-page-number');
-		const pageNumber = pageNumberAttr ? parseInt(pageNumberAttr, 10) : NaN;
-		if (Number.isNaN(pageNumber)) return;
-		const key = pageKey(filePath, pageNumber);
-
-		const existing = page.querySelector<HTMLCanvasElement>(
-			`canvas.${OVERLAY_CLASS}`,
-		);
-		if (existing) {
-			if (existing.getAttribute(OVERLAY_KEY_ATTR) === key) {
-				this.sizeOverlayToPage(existing, page);
-				this.redrawPage(existing);
-				return;
-			}
-			existing.remove();
-		}
-
-		page.classList.add(PAGE_ANCHOR_CLASS);
-		const overlay = activeDocument.createElement('canvas');
-		overlay.className = OVERLAY_CLASS;
-		overlay.setAttribute(OVERLAY_KEY_ATTR, key);
-		this.sizeOverlayToPage(overlay, page);
-		page.appendChild(overlay);
-		this.disableTextLayerInteraction(page);
-		this.wirePointerEvents(overlay);
-		this.redrawPage(overlay);
-
-		if (page.getAttribute(PAGE_OBSERVED_ATTR) === '1') return;
-		page.setAttribute(PAGE_OBSERVED_ATTR, '1');
-
-		const findOverlay = () =>
-			page.querySelector<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`);
-
-		new MutationObserver(() => {
-			const current = findOverlay();
-			if (!current) return;
-			this.disableTextLayerInteraction(page);
-			if (!page.contains(current)) {
-				this.sizeOverlayToPage(current, page);
-				page.appendChild(current);
-				this.redrawPage(current);
-			}
-		}).observe(page, { childList: true });
-
-		new ResizeObserver(() => {
-			const current = findOverlay();
-			if (!current) return;
-			this.sizeOverlayToPage(current, page);
-			this.redrawPage(current);
-		}).observe(page);
-	}
-
-	private sizeOverlayToPage(overlay: HTMLCanvasElement, page: HTMLElement) {
-		const rect = page.getBoundingClientRect();
-		if (rect.width === 0 || rect.height === 0) return;
-		const targetW = Math.round(rect.width);
-		const targetH = Math.round(rect.height);
-		if (overlay.width !== targetW) overlay.width = targetW;
-		if (overlay.height !== targetH) overlay.height = targetH;
-		overlay.setCssStyles({
-			width: `${rect.width}px`,
-			height: `${rect.height}px`,
-		});
-	}
-
-	private disableTextLayerInteraction(page: HTMLElement) {
-		page.querySelector<HTMLElement>('.textLayer')?.classList.add(
-			PASSTHROUGH_CLASS,
-		);
-		page.querySelector<HTMLElement>('.annotationLayer')?.classList.add(
-			PASSTHROUGH_CLASS,
-		);
-	}
-
-	private redrawPage(canvas: HTMLCanvasElement) {
-		const ctx = canvas.getContext('2d');
-		if (!ctx) return;
-		ctx.clearRect(0, 0, canvas.width, canvas.height);
-		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
-		if (!key) return;
-		for (const stroke of this.strokes.forKey(key)) {
-			drawStroke(ctx, stroke, { width: canvas.width, height: canvas.height });
-		}
 	}
 
 	private wirePointerEvents(canvas: HTMLCanvasElement) {
@@ -341,7 +191,7 @@ export default class JotPlugin extends Plugin {
 					removeHoldIndicator();
 					const { clientX, clientY } = state.pressedAt;
 					state.reset();
-					this.redrawPage(canvas);
+					this.overlays.redrawPage(canvas);
 					releasePointerCapture();
 					openPaletteAt(clientX, clientY);
 				},
@@ -416,7 +266,7 @@ export default class JotPlugin extends Plugin {
 			}
 			if (state.isDrawing()) {
 				this.finalizeDrawingStroke(canvas, state);
-				window.requestAnimationFrame(() => this.redrawPage(canvas));
+				window.requestAnimationFrame(() => this.overlays.redrawPage(canvas));
 			}
 			releasePointerCapture();
 		};
@@ -459,7 +309,7 @@ export default class JotPlugin extends Plugin {
 		state.appendDrawingPoint(next);
 		const canvasSize = { width: canvas.width, height: canvas.height };
 		if (this.toolState.tool === 'highlighter') {
-			this.redrawPage(canvas);
+			this.overlays.redrawPage(canvas);
 			drawHighlighterPolyline(
 				ctx,
 				state.drawingPoints(),
@@ -534,7 +384,7 @@ export default class JotPlugin extends Plugin {
 		}
 		if (removed === 0) return false;
 		this.strokes.setForKey(key, kept);
-		this.redrawPage(canvas);
+		this.overlays.redrawPage(canvas);
 		const pdfPath = pdfPathFromKey(key);
 		if (pdfPath) this.scheduleSave(pdfPath);
 		return true;
@@ -545,24 +395,24 @@ export default class JotPlugin extends Plugin {
 	}
 
 	canUndoActivePdf(): boolean {
-		const path = this.getActivePdfFilePath();
+		const path = this.overlays.getActivePdfFilePath();
 		return path !== null && this.history.canUndo(path);
 	}
 
 	canRedoActivePdf(): boolean {
-		const path = this.getActivePdfFilePath();
+		const path = this.overlays.getActivePdfFilePath();
 		return path !== null && this.history.canRedo(path);
 	}
 
 	undoActivePdf() {
-		const path = this.getActivePdfFilePath();
+		const path = this.overlays.getActivePdfFilePath();
 		if (!path) return;
 		const entry = this.history.popUndo(path, (key) => this.strokes.forKey(key));
 		if (entry) this.applyHistoryEntry(path, entry);
 	}
 
 	redoActivePdf() {
-		const path = this.getActivePdfFilePath();
+		const path = this.overlays.getActivePdfFilePath();
 		if (!path) return;
 		const entry = this.history.popRedo(path, (key) => this.strokes.forKey(key));
 		if (entry) this.applyHistoryEntry(path, entry);
@@ -570,17 +420,9 @@ export default class JotPlugin extends Plugin {
 
 	private applyHistoryEntry(pdfPath: string, entry: UndoEntry) {
 		this.strokes.setForKey(entry.key, [...entry.prevStrokes]);
-		const canvas = this.overlayForKey(entry.key);
-		if (canvas) this.redrawPage(canvas);
+		const canvas = this.overlays.overlayForKey(entry.key);
+		if (canvas) this.overlays.redrawPage(canvas);
 		this.scheduleSave(pdfPath);
-	}
-
-	private redrawOverlaysForActivePdf() {
-		const leaf = this.getActivePdfLeaf();
-		if (!leaf) return;
-		leaf.view.containerEl
-			.querySelectorAll<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`)
-			.forEach((canvas) => this.redrawPage(canvas));
 	}
 
 	private startClearFlow(pdfPath: string) {
@@ -596,18 +438,9 @@ export default class JotPlugin extends Plugin {
 			this.strokes.clearKey(entry.key);
 		}
 		this.scheduleSave(pdfPath);
-		this.redrawOverlaysForActivePdf();
+		this.overlays.redrawOverlaysForActivePdf();
 		new Notice(
 			`Jot: cleared ${totalStrokes} stroke${totalStrokes === 1 ? '' : 's'}. Undo to restore.`,
-		);
-	}
-
-	private overlayForKey(key: string): HTMLCanvasElement | null {
-		const leaf = this.getActivePdfLeaf();
-		if (!leaf) return null;
-		const escaped = key.replace(/["\\]/g, '\\$&');
-		return leaf.view.containerEl.querySelector<HTMLCanvasElement>(
-			`canvas.${OVERLAY_CLASS}[${OVERLAY_KEY_ATTR}="${escaped}"]`,
 		);
 	}
 }
