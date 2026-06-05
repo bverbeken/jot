@@ -1,7 +1,7 @@
 import { setIcon } from 'obsidian';
+import { ConfirmAnimator } from './confirm-animator';
 import { DragHandler } from './drag-handler';
 import { OutsideCloseListener } from './outside-close-listener';
-import { isDarkColor } from './palette-color';
 import {
 	BG_ANGULAR_PAD_DEG,
 	MAIN_ARC_RADIUS,
@@ -71,9 +71,6 @@ const TOOL_SLOT_INDEX = 2;
 const WIDTH_SLOT_INDEX = 3;
 const COLOR_SLOT_INDEX = 4;
 
-const CONFIRM_DISMISS_MS = 280;
-const CONFIRM_DISMISS_MS_REDUCED_MOTION = 80;
-
 type OnChange = (state: ToolState) => void;
 type SubArc = 'color' | 'tool' | 'width' | null;
 
@@ -107,6 +104,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 export class Palette {
 	private element: HTMLElement | null = null;
 	private outsideCloseListener: OutsideCloseListener;
+	private confirmAnimator: ConfirmAnimator;
 	private state: ToolState;
 	private onChange: OnChange;
 	private hooks: PaletteHooks;
@@ -129,6 +127,7 @@ export class Palette {
 			() => this.element,
 			() => this.hide(),
 		);
+		this.confirmAnimator = new ConfirmAnimator(() => this.hide());
 		if (memory?.pen) this.penMemory = { ...memory.pen };
 		if (memory?.highlighter) this.highlighterMemory = { ...memory.highlighter };
 		if (initial.tool === 'pen') {
@@ -424,23 +423,7 @@ export class Palette {
 	}
 
 	private confirmAndDismiss(btn: HTMLElement) {
-		const doc = btn.ownerDocument;
-		const win = doc.defaultView ?? window;
-		const reducedMotion = win.matchMedia('(prefers-reduced-motion: reduce)').matches;
-		const check = doc.createElement('span');
-		check.className = 'jot-palette-confirm';
-		setIcon(check, 'check');
-		const swatchColor = btn.dataset.color;
-		if (swatchColor) {
-			check.classList.add('on-swatch');
-			check.style.color = isDarkColor(swatchColor) ? '#fff' : '#000';
-		}
-		btn.appendChild(check);
-		win.requestAnimationFrame(() => check.classList.add('is-visible'));
-		win.setTimeout(
-			() => this.hide(),
-			reducedMotion ? CONFIRM_DISMISS_MS_REDUCED_MOTION : CONFIRM_DISMISS_MS,
-		);
+		this.confirmAnimator.flashAndDismiss(btn);
 	}
 
 	private makeItem(doc: Document, extraClass: string, off: Offset): HTMLDivElement {
