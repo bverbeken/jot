@@ -1,4 +1,4 @@
-import type { Stroke } from './strokes';
+import type { Stroke } from './stroke-math';
 
 export interface UndoEntry {
 	pdfPath: string;

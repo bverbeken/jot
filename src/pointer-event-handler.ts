@@ -9,10 +9,9 @@ import {
 	ERASE_RADIUS,
 	NormalizedPoint,
 	Stroke,
-	drawHighlighterPolyline,
-	drawSegment,
 	strokeIntersects,
-} from './strokes';
+} from './stroke-math';
+import { drawHighlighterPolyline, drawSegment } from './stroke-render';
 import type { StrokeStore } from './stroke-store';
 import { TwoFingerHoldDetector } from './two-finger-hold';
 import type { UndoController } from './undo-controller';

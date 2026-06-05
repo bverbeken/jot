@@ -6,7 +6,7 @@ import {
 	migrateStroke,
 	pageKey,
 } from './jot-file';
-import type { Stroke } from './strokes';
+import type { Stroke } from './stroke-math';
 
 export class StrokeStore {
 	private strokesByKey = new Map<string, Stroke[]>();

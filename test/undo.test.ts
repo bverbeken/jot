@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Stroke } from '../src/strokes';
+import type { Stroke } from '../src/stroke-math';
 import { MAX_UNDO_DEPTH, UndoEntry, UndoHistory } from '../src/undo';
 
 const stroke = (color = '#000'): Stroke => ({

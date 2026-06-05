@@ -1,6 +1,6 @@
 import { App, TFile, WorkspaceLeaf } from 'obsidian';
 import { pageKey } from './jot-file';
-import { drawStroke } from './strokes';
+import { drawStroke } from './stroke-render';
 import type { StrokeStore } from './stroke-store';
 
 const OVERLAY_CLASS = 'jot-overlay';

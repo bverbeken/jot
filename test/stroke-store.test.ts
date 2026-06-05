@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { StrokeStore } from '../src/stroke-store';
-import type { Stroke } from '../src/strokes';
+import type { Stroke } from '../src/stroke-math';
 
 const pen = (color = '#000'): Stroke => ({
 	points: [{ x: 0, y: 0, pressure: 0.5 }],

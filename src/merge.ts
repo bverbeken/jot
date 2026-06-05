@@ -1,13 +1,12 @@
 import { App, Modal } from 'obsidian';
 import { LineCapStyle, PDFPage, rgb } from 'pdf-lib';
 import {
-	forEachSmoothSegment,
-	HIGHLIGHTER_ALPHA,
-	HIGHLIGHTER_WIDTH_FACTOR,
 	PRESSURE_MAX_FACTOR,
 	PRESSURE_MIN_FACTOR,
 	Stroke,
-} from './strokes';
+	forEachSmoothSegment,
+} from './stroke-math';
+import { HIGHLIGHTER_ALPHA, HIGHLIGHTER_WIDTH_FACTOR } from './stroke-render';
 
 function hexToRgb(hex: string): { r: number; g: number; b: number } {
 	const h = hex.replace('#', '').padEnd(6, '0').slice(0, 6);

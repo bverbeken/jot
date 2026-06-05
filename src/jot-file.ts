@@ -1,4 +1,4 @@
-import type { Stroke } from './strokes';
+import type { Stroke } from './stroke-math';
 
 export const JOT_SUFFIX = '.jot.json';
 export const JOT_FORMAT_VERSION = 2;

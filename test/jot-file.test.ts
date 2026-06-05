@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Stroke } from '../src/strokes';
+import type { Stroke } from '../src/stroke-math';
 import {
 	JOT_FORMAT_VERSION,
 	buildJotPayload,

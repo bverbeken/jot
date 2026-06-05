@@ -1,4 +1,4 @@
-import type { NormalizedPoint } from './strokes';
+import type { NormalizedPoint } from './stroke-math';
 import type { Tool } from './palette';
 import type { UndoEntry } from './undo';
 

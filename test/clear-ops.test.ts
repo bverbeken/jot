@@ -4,7 +4,7 @@ import {
 	countStrokes,
 	toUndoEntries,
 } from '../src/clear-ops';
-import type { Stroke } from '../src/strokes';
+import type { Stroke } from '../src/stroke-math';
 
 const stroke = (color = '#000'): Stroke => ({
 	points: [{ x: 0, y: 0, pressure: 0.5 }],

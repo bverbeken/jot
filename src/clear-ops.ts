@@ -1,5 +1,5 @@
 import { PAGE_KEY_SEPARATOR } from './jot-file';
-import type { Stroke } from './strokes';
+import type { Stroke } from './stroke-math';
 import type { UndoEntry } from './undo';
 
 export interface ClearOperation {

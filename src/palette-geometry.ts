@@ -17,8 +17,7 @@ const TILT_OFFSET_DEG = 20;
 const ITEM_ANGULAR_DEG = 24;
 
 export const MAIN_ITEM_STEP_RAD = (ITEM_ANGULAR_DEG * Math.PI) / 180;
-export const SUB_ITEM_STEP_RAD =
-	2 * Math.asin((MAIN_ARC_RADIUS / SUB_ARC_RADIUS) * Math.sin(MAIN_ITEM_STEP_RAD / 2));
+export const SUB_ITEM_STEP_RAD = 2 * Math.asin((MAIN_ARC_RADIUS / SUB_ARC_RADIUS) * Math.sin(MAIN_ITEM_STEP_RAD / 2));
 
 const STRAIGHT_UP_RAD = (3 * Math.PI) / 2;
 const STRAIGHT_DOWN_RAD = Math.PI / 2;
