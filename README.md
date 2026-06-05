@@ -6,7 +6,7 @@ I built this to annotate musical scores during rehearsal with our vocal band: th
 
 Status: **early, working**. PDFs only for now.
 
-![Annotating a pdf with the radial palette open](docs/pen-right.png)
+<img src="docs/pen-right.png" alt="Annotating a pdf with the radial palette open" width="240" />
 
 ## Features
 
