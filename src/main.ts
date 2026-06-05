@@ -19,6 +19,7 @@ import { MergeService } from './merge-service';
 import { OVERLAY_KEY_ATTR, OverlayManager } from './overlay-manager';
 import { SidecarStore } from './sidecar-store';
 import { StrokeStore } from './stroke-store';
+import { UndoController } from './undo-controller';
 import { UndoEntry, UndoHistory } from './undo';
 
 export type { Handedness } from './palette';
@@ -38,6 +39,7 @@ export default class JotPlugin extends Plugin {
 	private palette!: Palette;
 	settings: JotSettings = { ...DEFAULT_SETTINGS };
 	private history = new UndoHistory();
+	private undoController!: UndoController;
 
 	async onload() {
 		await this.loadSettings();
@@ -45,6 +47,10 @@ export default class JotPlugin extends Plugin {
 		this.overlays = new OverlayManager(this.app, this.strokes, (canvas) =>
 			this.wirePointerEvents(canvas),
 		);
+		this.undoController = new UndoController(this.history, this.strokes, this.overlays, {
+			activePdfPath: () => this.overlays.getActivePdfFilePath(),
+			onAfterApply: (pdfPath) => this.scheduleSave(pdfPath),
+		});
 		this.merge = new MergeService(
 			this.app,
 			this.app.vault.adapter,
@@ -89,10 +95,10 @@ export default class JotPlugin extends Plugin {
 				void this.saveSettings();
 			},
 			{
-				onUndo: () => this.undoActivePdf(),
-				onRedo: () => this.redoActivePdf(),
-				canUndo: () => this.canUndoActivePdf(),
-				canRedo: () => this.canRedoActivePdf(),
+				onUndo: () => this.undoController.undo(),
+				onRedo: () => this.undoController.redo(),
+				canUndo: () => this.undoController.canUndo(),
+				canRedo: () => this.undoController.canRedo(),
 			},
 			{
 				pen: this.settings.penState,
@@ -391,38 +397,7 @@ export default class JotPlugin extends Plugin {
 	}
 
 	private pushUndo(entry: UndoEntry) {
-		this.history.push(entry);
-	}
-
-	canUndoActivePdf(): boolean {
-		const path = this.overlays.getActivePdfFilePath();
-		return path !== null && this.history.canUndo(path);
-	}
-
-	canRedoActivePdf(): boolean {
-		const path = this.overlays.getActivePdfFilePath();
-		return path !== null && this.history.canRedo(path);
-	}
-
-	undoActivePdf() {
-		const path = this.overlays.getActivePdfFilePath();
-		if (!path) return;
-		const entry = this.history.popUndo(path, (key) => this.strokes.forKey(key));
-		if (entry) this.applyHistoryEntry(path, entry);
-	}
-
-	redoActivePdf() {
-		const path = this.overlays.getActivePdfFilePath();
-		if (!path) return;
-		const entry = this.history.popRedo(path, (key) => this.strokes.forKey(key));
-		if (entry) this.applyHistoryEntry(path, entry);
-	}
-
-	private applyHistoryEntry(pdfPath: string, entry: UndoEntry) {
-		this.strokes.setForKey(entry.key, [...entry.prevStrokes]);
-		const canvas = this.overlays.overlayForKey(entry.key);
-		if (canvas) this.overlays.redrawPage(canvas);
-		this.scheduleSave(pdfPath);
+		this.undoController.push(entry);
 	}
 
 	private startClearFlow(pdfPath: string) {
