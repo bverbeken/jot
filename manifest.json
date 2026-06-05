@@ -2,8 +2,8 @@
 	"id": "jot",
 	"name": "Jot",
 	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
-	"description": "Handwrite annotations with Apple Pencil. Strokes are stored in a JSON sidecar next to the original file, which is never modified. Supports PDFs.",
+	"minAppVersion": "1.4.4",
+	"description": "Annotate PDFs with your Apple Pencil. Strokes save to a JSON sidecar; the PDF is never modified.",
 	"author": "Ben Verbeken",
 	"authorUrl": "https://github.com/bverbeken",
 	"isDesktopOnly": false
