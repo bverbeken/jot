@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, ColorComponent, PluginSettingTab, Setting } from 'obsidian';
 import {
 	DEFAULT_HIGHLIGHTER_MEMORY,
 	DEFAULT_PEN_MEMORY,
@@ -61,17 +61,19 @@ export class JotSettingTab extends PluginSettingTab {
 			.setDesc('The seven swatches shown in the color sub-arc.')
 			.setHeading();
 
+		const pickers: ColorComponent[] = [];
 		PALETTE_COLORS.forEach((_, index) => {
 			new Setting(containerEl)
 				.setName(`Color ${index + 1}`)
-				.addColorPicker((picker) =>
+				.addColorPicker((picker) => {
+					pickers[index] = picker;
 					picker
 						.setValue(this.plugin.settings.colors[index] ?? PALETTE_COLORS[index]!)
 						.onChange(async (value) => {
 							this.plugin.settings.colors[index] = value;
 							await this.plugin.saveSettings();
-						}),
-				);
+						});
+				});
 		});
 
 		new Setting(containerEl)
@@ -81,8 +83,9 @@ export class JotSettingTab extends PluginSettingTab {
 					.onClick(async () => {
 						this.plugin.settings.colors = [...PALETTE_COLORS];
 						await this.plugin.saveSettings();
-						// eslint-disable-next-line @typescript-eslint/no-deprecated
-						this.display();
+						PALETTE_COLORS.forEach((color, i) => {
+							pickers[i]?.setValue(color);
+						});
 					}),
 			);
 	}

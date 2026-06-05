@@ -64,11 +64,10 @@ export class MergeService {
 			drawStrokesOnPdfPage(page, strokes);
 		}
 		const out = await pdfDoc.save();
+		const buffer = new ArrayBuffer(out.byteLength);
+		new Uint8Array(buffer).set(out);
 		const outPath = choice === 'overwrite' ? pdfPath : copyTarget;
-		await this.adapter.writeBinary(
-			outPath,
-			out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer,
-		);
+		await this.adapter.writeBinary(outPath, buffer);
 		return outPath;
 	}
 
