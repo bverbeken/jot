@@ -1,5 +1,6 @@
 import { setIcon } from 'obsidian';
 import { DragHandler } from './drag-handler';
+import { OutsideCloseListener } from './outside-close-listener';
 import { isDarkColor } from './palette-color';
 import {
 	BG_ANGULAR_PAD_DEG,
@@ -105,8 +106,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 
 export class Palette {
 	private element: HTMLElement | null = null;
-	private outsideHandler: ((e: PointerEvent) => void) | null = null;
-	private outsideDoc: Document | null = null;
+	private outsideCloseListener: OutsideCloseListener;
 	private state: ToolState;
 	private onChange: OnChange;
 	private hooks: PaletteHooks;
@@ -125,6 +125,10 @@ export class Palette {
 		this.state = { ...initial };
 		this.onChange = onChange;
 		this.hooks = hooks;
+		this.outsideCloseListener = new OutsideCloseListener(
+			() => this.element,
+			() => this.hide(),
+		);
 		if (memory?.pen) this.penMemory = { ...memory.pen };
 		if (memory?.highlighter) this.highlighterMemory = { ...memory.highlighter };
 		if (initial.tool === 'pen') {
@@ -165,7 +169,7 @@ export class Palette {
 
 		this.element = el;
 		this.bindDrag(el);
-		this.bindOutsideClose(doc);
+		this.outsideCloseListener.attach(doc);
 	}
 
 	hide() {
@@ -173,11 +177,7 @@ export class Palette {
 		this.element.remove();
 		this.element = null;
 		this.subArc = null;
-		if (this.outsideHandler && this.outsideDoc) {
-			this.outsideDoc.removeEventListener('pointerdown', this.outsideHandler, true);
-			this.outsideHandler = null;
-			this.outsideDoc = null;
-		}
+		this.outsideCloseListener.detach();
 	}
 
 	private shouldFlipDown(clientY: number, doc: Document): boolean {
@@ -457,21 +457,6 @@ export class Palette {
 		new DragHandler(el, { ignoreMouseInsideSelector: '.jot-palette-item' }).attach();
 	}
 
-	private bindOutsideClose(doc: Document) {
-		const handler = (e: PointerEvent) => {
-			if (!this.element) return;
-			const target = e.target as Node | null;
-			if (target && this.element.contains(target)) return;
-			this.hide();
-		};
-		this.outsideHandler = handler;
-		this.outsideDoc = doc;
-		window.setTimeout(() => {
-			if (this.outsideHandler === handler) {
-				doc.addEventListener('pointerdown', handler, true);
-			}
-		}, 0);
-	}
 }
 
 function degToRad(deg: number): number {
