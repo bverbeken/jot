@@ -17,8 +17,11 @@ Status: **early, working**. PDFs only for now.
 - Merge annotations into a flattened PDF (overwrite or save a copy)
 - Cross-device sync via the sidecar JSON — edit on iPad, see it on desktop
 
-![Right-handed color selection](docs/color-right.png)
-![Left-handed color selection](docs/color-left.png)
+<p>
+  <img src="docs/color-right.png" alt="Right-handed color selection" width="240" />
+  <img src="docs/color-left.png" alt="Left-handed color selection" width="240" />
+  <img src="docs/thickness-right.png" alt="Thickness selection" width="240" />
+</p>
 
 ## Installing
 
@@ -53,6 +56,6 @@ Open `dev-vault/` as a vault in Obsidian to test. The dev vault is gitignored an
 
 ### Testing on iPad
 
-_1. Cut a GitHub release (`npm version patch` then `git push origin <tag>` — the release workflow uploads `main.js`, `manifest.json`, `styles.css`).
+1. Cut a GitHub release (`npm version patch` then `git push origin <tag>` — the release workflow uploads `main.js`, `manifest.json`, `styles.css`).
 2. On the iPad, install **BRAT** into a *separate dev vault* — never your real one.
-3. In BRAT, add this repo as a beta plugin. BRAT pulls the release and installs it._
+3. In BRAT, add this repo as a beta plugin. BRAT pulls the release and installs it.
