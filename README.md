@@ -25,13 +25,12 @@ Status: **early, working**. PDFs only for now.
 
 ## Installing
 
-Jot isn't in the community plugin store yet. For now, install via [BRAT](https://github.com/TfTHacker/obsidian42-brat):
+1. In Obsidian, open *Settings → Community plugins → Browse*.
+2. Search for **Jot**, install, and enable it.
 
-1. Install **BRAT** from the community plugins browser.
-2. Open BRAT's settings → *Add Beta plugin* → paste `https://github.com/bverbeken/jot`.
-3. BRAT will fetch the latest release and enable Jot.
+### Beta builds
 
-Community-store submission is planned once a few rough edges are polished.
+To try unreleased changes, install [BRAT](https://github.com/TfTHacker/obsidian42-brat) and add `https://github.com/bverbeken/jot` as a beta plugin.
 
 ## Using it
 
