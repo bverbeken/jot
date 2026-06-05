@@ -1,4 +1,5 @@
 import { setIcon } from 'obsidian';
+import { DragHandler } from './drag-handler';
 import { isDarkColor } from './palette-color';
 import {
 	BG_ANGULAR_PAD_DEG,
@@ -453,59 +454,7 @@ export class Palette {
 	}
 
 	private bindDrag(el: HTMLElement) {
-		let dragging = false;
-		let activeId: number | null = null;
-		let startClientX = 0;
-		let startClientY = 0;
-		let startLeft = 0;
-		let startTop = 0;
-
-		el.addEventListener(
-			'pointerdown',
-			(e) => {
-				if (e.pointerType === 'pen') return;
-				if (e.pointerType === 'mouse') {
-					const target = e.target as Element | null;
-					if (target?.closest('.jot-palette-item')) return;
-				}
-				dragging = true;
-				activeId = e.pointerId;
-				startClientX = e.clientX;
-				startClientY = e.clientY;
-				startLeft = parseFloat(el.style.left) || 0;
-				startTop = parseFloat(el.style.top) || 0;
-				el.setPointerCapture(e.pointerId);
-				e.preventDefault();
-				e.stopPropagation();
-			},
-			true,
-		);
-
-		el.addEventListener(
-			'pointermove',
-			(e) => {
-				if (!dragging || e.pointerId !== activeId) return;
-				const dx = e.clientX - startClientX;
-				const dy = e.clientY - startClientY;
-				el.style.left = `${startLeft + dx}px`;
-				el.style.top = `${startTop + dy}px`;
-				e.preventDefault();
-			},
-			true,
-		);
-
-		const endDrag = (e: PointerEvent) => {
-			if (!dragging || e.pointerId !== activeId) return;
-			dragging = false;
-			activeId = null;
-			try {
-				el.releasePointerCapture(e.pointerId);
-			} catch {
-				/* already released */
-			}
-		};
-		el.addEventListener('pointerup', endDrag, true);
-		el.addEventListener('pointercancel', endDrag, true);
+		new DragHandler(el, { ignoreMouseInsideSelector: '.jot-palette-item' }).attach();
 	}
 
 	private bindOutsideClose(doc: Document) {
