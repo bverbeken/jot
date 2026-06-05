@@ -81,6 +81,7 @@ export class JotSettingTab extends PluginSettingTab {
 					.onClick(async () => {
 						this.plugin.settings.colors = [...PALETTE_COLORS];
 						await this.plugin.saveSettings();
+						// eslint-disable-next-line @typescript-eslint/no-deprecated
 						this.display();
 					}),
 			);
