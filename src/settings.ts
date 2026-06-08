@@ -1,4 +1,4 @@
-import { App, ColorComponent, PluginSettingTab, Setting } from 'obsidian';
+import { App, PluginSettingTab, type SettingDefinitionItem } from 'obsidian';
 import {
 	DEFAULT_HIGHLIGHTER_MEMORY,
 	DEFAULT_PEN_MEMORY,
@@ -8,6 +8,7 @@ import {
 	ToolMemory,
 	ToolState,
 } from './palette';
+import { colorKey, parseColorKey } from './settings-keys';
 import type JotPlugin from './main';
 
 export type { Handedness };
@@ -36,57 +37,63 @@ export class JotSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
-	display() {
-		const { containerEl } = this;
-		containerEl.empty();
+	override getSettingDefinitions(): SettingDefinitionItem[] {
+		const colorPickers: SettingDefinitionItem[] = PALETTE_COLORS.map((_, index) => ({
+			name: `Color ${index + 1}`,
+			control: {
+				type: 'color',
+				key: colorKey(index),
+			},
+		}));
 
-		new Setting(containerEl)
-			.setName('Handedness')
-			.setDesc(
-				"The palette fans away from your pen hand so it doesn't sit under your wrist.",
-			)
-			.addDropdown((d) =>
-				d
-					.addOption('right', 'Right-handed')
-					.addOption('left', 'Left-handed')
-					.setValue(this.plugin.settings.handedness)
-					.onChange(async (value) => {
-						this.plugin.settings.handedness = value as Handedness;
-						await this.plugin.saveSettings();
-					}),
-			);
+		return [
+			{
+				name: 'Handedness',
+				desc: "The palette fans away from your pen hand so it doesn't sit under your wrist.",
+				control: {
+					type: 'dropdown',
+					key: 'handedness',
+					options: { right: 'Right-handed', left: 'Left-handed' },
+				},
+			},
+			{
+				name: 'Palette colors',
+				desc: 'The seven swatches shown in the color sub-arc.',
+				render: (setting) => {
+					setting.setHeading();
+				},
+			},
+			...colorPickers,
+			{
+				name: 'Reset palette colors to defaults',
+				action: () => {
+					void this.resetPaletteColors();
+				},
+			},
+		];
+	}
 
-		new Setting(containerEl)
-			.setName('Palette colors')
-			.setDesc('The seven swatches shown in the color sub-arc.')
-			.setHeading();
+	private async resetPaletteColors(): Promise<void> {
+		this.plugin.settings.colors = [...PALETTE_COLORS];
+		await this.plugin.saveSettings();
+		this.update();
+	}
 
-		const pickers: ColorComponent[] = [];
-		PALETTE_COLORS.forEach((_, index) => {
-			new Setting(containerEl)
-				.setName(`Color ${index + 1}`)
-				.addColorPicker((picker) => {
-					pickers[index] = picker;
-					picker
-						.setValue(this.plugin.settings.colors[index] ?? PALETTE_COLORS[index]!)
-						.onChange(async (value) => {
-							this.plugin.settings.colors[index] = value;
-							await this.plugin.saveSettings();
-						});
-				});
-		});
+	override getControlValue(key: string): unknown {
+		const index = parseColorKey(key);
+		if (index !== null) {
+			return this.plugin.settings.colors[index] ?? PALETTE_COLORS[index];
+		}
+		return super.getControlValue(key);
+	}
 
-		new Setting(containerEl)
-			.addButton((button) =>
-				button
-					.setButtonText('Reset palette colors to defaults')
-					.onClick(async () => {
-						this.plugin.settings.colors = [...PALETTE_COLORS];
-						await this.plugin.saveSettings();
-						PALETTE_COLORS.forEach((color, i) => {
-							pickers[i]?.setValue(color);
-						});
-					}),
-			);
+	override async setControlValue(key: string, value: unknown): Promise<void> {
+		const index = parseColorKey(key);
+		if (index !== null) {
+			this.plugin.settings.colors[index] = String(value);
+			await this.plugin.saveSettings();
+			return;
+		}
+		await super.setControlValue(key, value);
 	}
 }
