@@ -1,3 +1,4 @@
+import { readCanvasSurface } from './canvas-surface';
 import { createHoldIndicator } from './hold-indicator';
 import { pdfPathFromKey } from './jot-file';
 import { LongPressDetector } from './long-press';
@@ -149,13 +150,13 @@ export class PointerEventHandler {
 		if (!previous) return;
 		const next = this.toNormalized(e);
 		this.state.appendDrawingPoint(next);
-		const canvasSize = { width: this.canvas.width, height: this.canvas.height };
+		const surface = readCanvasSurface(this.canvas);
 		const tool = this.deps.toolState();
 		if (tool.tool === 'highlighter') {
 			this.deps.overlays.redrawPage(this.canvas);
-			drawHighlighterPolyline(this.ctx, this.state.drawingPoints(), tool.color, tool.width, canvasSize);
+			drawHighlighterPolyline(this.ctx, this.state.drawingPoints(), tool.color, tool.width, surface);
 		} else {
-			drawSegment(this.ctx, previous, next, tool.color, tool.width, canvasSize);
+			drawSegment(this.ctx, previous, next, tool.color, tool.width, surface);
 		}
 		e.preventDefault();
 	}

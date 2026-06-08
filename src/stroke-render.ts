@@ -8,6 +8,7 @@ import {
 export interface CanvasSize {
 	width: number;
 	height: number;
+	dpr?: number;
 }
 
 export const HIGHLIGHTER_ALPHA = 0.35;
@@ -15,6 +16,11 @@ export const HIGHLIGHTER_WIDTH_FACTOR = 4;
 
 function denormalize(point: NormalizedPoint, canvas: CanvasSize) {
 	return { x: point.x * canvas.width, y: point.y * canvas.height };
+}
+
+function applyDprTransform(ctx: CanvasRenderingContext2D, canvas: CanvasSize) {
+	const dpr = canvas.dpr ?? 1;
+	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 function pressureScaledWidth(
@@ -35,6 +41,7 @@ export function drawSegment(
 	baseWidth: number,
 	canvas: CanvasSize,
 ) {
+	applyDprTransform(ctx, canvas);
 	ctx.lineWidth = pressureScaledWidth(a, b, baseWidth, canvas);
 	ctx.strokeStyle = color;
 	ctx.lineCap = 'round';
@@ -56,6 +63,7 @@ export function drawHighlighterPolyline(
 ) {
 	if (points.length < 2) return;
 	ctx.save();
+	applyDprTransform(ctx, canvas);
 	ctx.lineWidth = baseWidth * HIGHLIGHTER_WIDTH_FACTOR * canvas.height;
 	ctx.strokeStyle = color;
 	ctx.lineCap = 'butt';

@@ -1,4 +1,9 @@
 import { App, TFile, WorkspaceLeaf } from 'obsidian';
+import {
+	applyBackingStoreSize,
+	devicePixelRatioFor,
+	readCanvasSurface,
+} from './canvas-surface';
 import { pageKey } from './jot-file';
 import { drawStroke } from './stroke-render';
 import type { StrokeStore } from './stroke-store';
@@ -57,11 +62,13 @@ export class OverlayManager {
 	redrawPage(canvas: HTMLCanvasElement): void {
 		const ctx = canvas.getContext('2d');
 		if (!ctx) return;
-		ctx.clearRect(0, 0, canvas.width, canvas.height);
+		const surface = readCanvasSurface(canvas);
+		ctx.setTransform(surface.dpr, 0, 0, surface.dpr, 0, 0);
+		ctx.clearRect(0, 0, surface.width, surface.height);
 		const key = canvas.getAttribute(OVERLAY_KEY_ATTR);
 		if (!key) return;
 		for (const stroke of this.strokes.forKey(key)) {
-			drawStroke(ctx, stroke, { width: canvas.width, height: canvas.height });
+			drawStroke(ctx, stroke, surface);
 		}
 	}
 
@@ -171,10 +178,8 @@ export class OverlayManager {
 	private sizeOverlayToPage(overlay: HTMLCanvasElement, page: HTMLElement): void {
 		const rect = page.getBoundingClientRect();
 		if (rect.width === 0 || rect.height === 0) return;
-		const targetWidth = Math.round(rect.width);
-		const targetHeight = Math.round(rect.height);
-		if (overlay.width !== targetWidth) overlay.width = targetWidth;
-		if (overlay.height !== targetHeight) overlay.height = targetHeight;
+		const dpr = devicePixelRatioFor(window);
+		applyBackingStoreSize(overlay, rect.width, rect.height, dpr);
 		overlay.setCssStyles({
 			width: `${rect.width}px`,
 			height: `${rect.height}px`,
