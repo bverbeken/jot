@@ -69,6 +69,66 @@ export function subSlotOffset(
 	};
 }
 
+export interface Bounds {
+	minX: number;
+	maxX: number;
+	minY: number;
+	maxY: number;
+}
+
+/**
+ * Bounding box (in offset space, relative to the press anchor) of the centers
+ * of every item the palette can render: the origin/close button, the five
+ * main-arc slots, and the items of each sub-arc that may open. Used to keep
+ * the whole fan on-screen regardless of where it is triggered.
+ */
+export function arcBounds(
+	handedness: Handedness,
+	flipDown: boolean,
+	subArcs: { slot: number; count: number }[] = [],
+): Bounds {
+	const offsets: Offset[] = [arcOrigin(handedness, flipDown)];
+	for (let slot = 0; slot < MAIN_ITEM_COUNT; slot++) {
+		offsets.push(mainSlotOffset(slot, handedness, flipDown));
+	}
+	for (const { slot, count } of subArcs) {
+		const centerTheta = slotAngle(slot, handedness, flipDown);
+		for (let i = 0; i < count; i++) {
+			offsets.push(subSlotOffset(i, count, centerTheta, handedness, flipDown));
+		}
+	}
+	let minX = Infinity;
+	let maxX = -Infinity;
+	let minY = Infinity;
+	let maxY = -Infinity;
+	for (const { ox, oy } of offsets) {
+		if (ox < minX) minX = ox;
+		if (ox > maxX) maxX = ox;
+		if (oy < minY) minY = oy;
+		if (oy > maxY) maxY = oy;
+	}
+	return { minX, maxX, minY, maxY };
+}
+
+/**
+ * Shift a press coordinate so the palette's extent on one axis stays within
+ * `[pad, extent - pad]`. `minOff`/`maxOff` are the item-center bounds relative
+ * to the anchor; `pad` covers item half-size and screen margin. If the fan is
+ * larger than the viewport on this axis, it is centered instead.
+ */
+export function clampAxis(
+	pos: number,
+	minOff: number,
+	maxOff: number,
+	extent: number,
+	pad: number,
+): number {
+	const lo = pad - minOff;
+	const hi = extent - pad - maxOff;
+	if (lo > hi) return (lo + hi) / 2;
+	return Math.min(Math.max(pos, lo), hi);
+}
+
 export function arcCenterlinePath(radius: number, startAngle: number, endAngle: number): string {
 	const start = pointOnArc(radius, startAngle);
 	const end = pointOnArc(radius, endAngle);

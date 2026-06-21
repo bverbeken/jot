@@ -6,9 +6,11 @@ import {
 	MAIN_ITEM_STEP_RAD,
 	SUB_ARC_RADIUS,
 	SUB_ITEM_STEP_RAD,
+	arcBounds,
 	arcCenterAngle,
 	arcCenterlinePath,
 	arcOrigin,
+	clampAxis,
 	mainSlotOffset,
 	slotAngle,
 	subSlotOffset,
@@ -119,5 +121,68 @@ describe('arcCenterlinePath', () => {
 	it('flags a small-arc when the swept angle is at or below π', () => {
 		const narrow = arcCenterlinePath(100, 0, Math.PI / 4);
 		expect(narrow).toMatch(/A 100 100 0 0 1/);
+	});
+});
+
+describe('arcBounds', () => {
+	const mainBounds = arcBounds('right', false);
+
+	it('contains the origin and every main-arc slot', () => {
+		const offsets = [arcOrigin('right', false)];
+		for (let slot = 0; slot < MAIN_ITEM_COUNT; slot++) {
+			offsets.push(mainSlotOffset(slot, 'right', false));
+		}
+		for (const { ox, oy } of offsets) {
+			expect(ox).toBeGreaterThanOrEqual(mainBounds.minX);
+			expect(ox).toBeLessThanOrEqual(mainBounds.maxX);
+			expect(oy).toBeGreaterThanOrEqual(mainBounds.minY);
+			expect(oy).toBeLessThanOrEqual(mainBounds.maxY);
+		}
+	});
+
+	it('only grows when a sub-arc is included', () => {
+		const withSub = arcBounds('right', false, [{ slot: 4, count: 7 }]);
+		expect(withSub.minX).toBeLessThanOrEqual(mainBounds.minX);
+		expect(withSub.maxX).toBeGreaterThanOrEqual(mainBounds.maxX);
+		expect(withSub.minY).toBeLessThanOrEqual(mainBounds.minY);
+		expect(withSub.maxY).toBeGreaterThanOrEqual(mainBounds.maxY);
+	});
+
+	it('spans wider than the main arc alone once a 7-color sub-arc opens', () => {
+		const withSub = arcBounds('right', false, [{ slot: 4, count: 7 }]);
+		const mainSpan = mainBounds.maxX - mainBounds.minX;
+		const subSpan = withSub.maxX - withSub.minX;
+		expect(subSpan).toBeGreaterThan(mainSpan);
+	});
+});
+
+describe('clampAxis', () => {
+	// lo = pad - minOff = 120, hi = extent - pad - maxOff = 880
+	it('leaves a position that already fits untouched', () => {
+		expect(clampAxis(500, -100, 100, 1000, 20)).toBe(500);
+	});
+	it('pushes a position off the leading edge inward to the low bound', () => {
+		expect(clampAxis(50, -100, 100, 1000, 20)).toBe(120);
+	});
+	it('pushes a position off the trailing edge inward to the high bound', () => {
+		expect(clampAxis(950, -100, 100, 1000, 20)).toBe(880);
+	});
+	it('centers the fan when it is larger than the viewport on this axis', () => {
+		// lo = 120, hi = 150 - 20 - 100 = 30 → lo > hi → center at 75
+		expect(clampAxis(0, -100, 100, 150, 20)).toBe(75);
+	});
+
+	it('keeps the real fan extents within the viewport after clamping', () => {
+		const bounds = arcBounds('right', false, [{ slot: 4, count: 7 }]);
+		const pad = 36;
+		const innerWidth = 800;
+		const innerHeight = 600;
+		// Trigger hard in the top-left corner.
+		const x = clampAxis(2, bounds.minX, bounds.maxX, innerWidth, pad);
+		const y = clampAxis(2, bounds.minY, bounds.maxY, innerHeight, pad);
+		expect(x + bounds.minX).toBeGreaterThanOrEqual(pad);
+		expect(x + bounds.maxX).toBeLessThanOrEqual(innerWidth - pad);
+		expect(y + bounds.minY).toBeGreaterThanOrEqual(pad);
+		expect(y + bounds.maxY).toBeLessThanOrEqual(innerHeight - pad);
 	});
 });
