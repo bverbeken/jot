@@ -1,6 +1,7 @@
 import { Notice, Plugin, TFile } from 'obsidian';
 import { DEFAULT_TOOL_STATE, Palette, ToolState } from './palette';
 import { DEFAULT_SETTINGS, JotSettings, JotSettingTab } from './settings';
+import { clampPenHoldMs } from './pen-hold';
 import { ConfirmClearModal } from './clear';
 import { collectClearOperations, countStrokes, toUndoEntries } from './clear-ops';
 import { PointerEventHandler } from './pointer-event-handler';
@@ -158,12 +159,17 @@ export default class JotPlugin extends Plugin {
 			undo: this.undoController,
 			toolState: () => this.toolState,
 			handedness: () => this.settings.handedness,
+			penHold: () => ({
+				enabled: this.settings.penHoldOpensPalette,
+				durationMs: this.settings.penHoldMs,
+			}),
 		}).attach();
 	}
 
 	async loadSettings() {
 		const stored = (await this.loadData()) as Partial<JotSettings> | null;
 		this.settings = { ...DEFAULT_SETTINGS, ...(stored ?? {}) };
+		this.settings.penHoldMs = clampPenHoldMs(this.settings.penHoldMs);
 		this.toolState = { ...this.settings.toolState };
 	}
 

@@ -109,4 +109,14 @@ describe('LongPressDetector', () => {
 		detector.cancel();
 		expect(cancels).toBe(0);
 	});
+
+	it('uses the duration passed to start instead of the configured default', () => {
+		let fires = 0;
+		const detector = makeDetector(() => fires++);
+		detector.start(0, 0, DURATION * 3);
+		vi.advanceTimersByTime(DURATION * 3 - 1);
+		expect(fires).toBe(0);
+		vi.advanceTimersByTime(1);
+		expect(fires).toBe(1);
+	});
 });

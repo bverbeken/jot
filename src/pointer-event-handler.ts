@@ -4,6 +4,7 @@ import { pdfPathFromKey } from './jot-file';
 import { LongPressDetector } from './long-press';
 import type { Handedness, Palette, ToolState } from './palette';
 import { OVERLAY_KEY_ATTR, OverlayManager } from './overlay-manager';
+import type { PenHoldSettings } from './pen-hold';
 import { PenStrokeState } from './pen-stroke-state';
 import type { SidecarStore } from './sidecar-store';
 import {
@@ -17,7 +18,6 @@ import type { StrokeStore } from './stroke-store';
 import { TwoFingerHoldDetector } from './two-finger-hold';
 import type { UndoController } from './undo-controller';
 
-const LONG_PRESS_MS = 300;
 const LONG_PRESS_MOVE_PX = 15;
 const TWO_FINGER_HOLD_MS = 300;
 const TWO_FINGER_MOVE_PX = 25;
@@ -30,6 +30,7 @@ export interface PointerEventHandlerDeps {
 	undo: UndoController;
 	toolState: () => ToolState;
 	handedness: () => Handedness;
+	penHold: () => PenHoldSettings;
 }
 
 export class PointerEventHandler {
@@ -46,7 +47,7 @@ export class PointerEventHandler {
 		private deps: PointerEventHandlerDeps,
 	) {
 		this.longPress = new LongPressDetector(
-			{ durationMs: LONG_PRESS_MS, movementThresholdPx: LONG_PRESS_MOVE_PX },
+			{ durationMs: deps.penHold().durationMs, movementThresholdPx: LONG_PRESS_MOVE_PX },
 			{
 				onFire: () => this.onLongPressFire(),
 				onCancel: () => this.removeHoldIndicator(),
@@ -84,8 +85,11 @@ export class PointerEventHandler {
 		if (this.state.isDrawing()) {
 			this.state.appendDrawingPoint(this.toNormalized(e));
 		}
-		this.showHoldIndicator(e.clientX, e.clientY);
-		this.longPress.start(e.clientX, e.clientY);
+		const penHold = this.deps.penHold();
+		if (penHold.enabled) {
+			this.showHoldIndicator(e.clientX, e.clientY, penHold.durationMs);
+			this.longPress.start(e.clientX, e.clientY, penHold.durationMs);
+		}
 		e.preventDefault();
 	}
 
@@ -224,8 +228,8 @@ export class PointerEventHandler {
 		this.deps.palette.show(activeDocument.body, x, y, this.deps.handedness());
 	}
 
-	private showHoldIndicator(x: number, y: number): void {
-		this.holdIndicator = createHoldIndicator(activeDocument, x, y, LONG_PRESS_MS);
+	private showHoldIndicator(x: number, y: number, durationMs: number): void {
+		this.holdIndicator = createHoldIndicator(activeDocument, x, y, durationMs);
 		activeDocument.body.appendChild(this.holdIndicator);
 	}
 

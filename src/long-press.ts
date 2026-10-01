@@ -18,14 +18,14 @@ export class LongPressDetector {
 		private callbacks: LongPressCallbacks,
 	) {}
 
-	start(x: number, y: number): void {
+	start(x: number, y: number, durationMs = this.options.durationMs): void {
 		this.cancel();
 		this.downX = x;
 		this.downY = y;
 		this.timerId = window.setTimeout(() => {
 			this.timerId = null;
 			this.callbacks.onFire();
-		}, this.options.durationMs);
+		}, durationMs);
 	}
 
 	move(x: number, y: number): void {
