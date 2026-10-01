@@ -35,12 +35,12 @@ To try unreleased changes, install [BRAT](https://github.com/TfTHacker/obsidian4
 ## Using it
 
 1. Open a PDF in Obsidian.
-2. Long-press anywhere on the page with the Apple Pencil to open the radial palette. Pick a tool, color, or width.
+2. Long-press anywhere on the page with the Apple Pencil, or hold two fingers on the page, to open the radial palette. Pick a tool, color, or width.
 3. Draw with the Apple Pencil. Rest your palm freely — touch input is ignored once a pen stroke starts.
 4. Two-finger hold dismisses the palette. The palette also auto-dismisses after a brief confirmation animation when you pick a color.
 5. Run the **Merge notes into PDF** command to bake annotations into a flattened PDF. Run **Clear annotations on this PDF** to wipe all strokes (undoable).
 
-Set your handedness and customize the seven palette colors under *Settings → Jot*.
+Set your handedness, the pen hold duration, and the seven palette colors under *Settings → Jot*. If the palette opens while you write, raise the hold duration or turn off **Open palette with pen hold** to use only the two-finger hold.
 
 ## Development
 

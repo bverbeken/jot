@@ -8,12 +8,15 @@ import {
 	ToolMemory,
 	ToolState,
 } from './palette';
+import { PEN_HOLD_MAX_MS, PEN_HOLD_MIN_MS, PEN_HOLD_STEP_MS } from './pen-hold';
 import type JotPlugin from './main';
 
 export type { Handedness };
 
 export interface JotSettings {
 	handedness: Handedness;
+	penHoldOpensPalette: boolean;
+	penHoldMs: number;
 	toolState: ToolState;
 	penState: ToolMemory;
 	highlighterState: ToolMemory;
@@ -22,6 +25,8 @@ export interface JotSettings {
 
 export const DEFAULT_SETTINGS: JotSettings = {
 	handedness: 'right',
+	penHoldOpensPalette: true,
+	penHoldMs: PEN_HOLD_MIN_MS,
 	toolState: { ...DEFAULT_TOOL_STATE },
 	penState: { ...DEFAULT_PEN_MEMORY },
 	highlighterState: { ...DEFAULT_HIGHLIGHTER_MEMORY },
@@ -55,6 +60,35 @@ export class JotSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					}),
 			);
+
+		let holdDuration: Setting | null = null;
+		new Setting(containerEl)
+			.setName('Open palette with pen hold')
+			.setDesc('When off, only a two-finger hold opens the palette.')
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.penHoldOpensPalette).onChange(async (value) => {
+					this.plugin.settings.penHoldOpensPalette = value;
+					holdDuration?.setDisabled(!value);
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		holdDuration = new Setting(containerEl)
+			.setName('Pen hold duration')
+			.setDesc(
+				'Milliseconds to hold the pen still before the palette opens. Raise it if the palette opens while you write.',
+			)
+			.addSlider((slider) =>
+				slider
+					.setLimits(PEN_HOLD_MIN_MS, PEN_HOLD_MAX_MS, PEN_HOLD_STEP_MS)
+					.setDynamicTooltip()
+					.setValue(this.plugin.settings.penHoldMs)
+					.onChange(async (value) => {
+						this.plugin.settings.penHoldMs = value;
+						await this.plugin.saveSettings();
+					}),
+			)
+			.setDisabled(!this.plugin.settings.penHoldOpensPalette);
 
 		new Setting(containerEl)
 			.setName('Palette colors')
