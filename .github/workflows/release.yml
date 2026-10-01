@@ -47,6 +47,10 @@ jobs:
 
                   if gh release view "$tag" >/dev/null 2>&1; then
                     gh release upload "$tag" "${assets[@]}" --clobber
+                  elif [[ "$tag" == *-* ]]; then
+                    # SemVer pre-release tags (e.g. 1.0.7-beta.1) publish immediately
+                    # as a pre-release so BRAT can install them without becoming Latest.
+                    gh release create "$tag" --title="$tag" --prerelease "${assets[@]}"
                   else
                     gh release create "$tag" --title="$tag" --draft "${assets[@]}"
                   fi
