@@ -1,6 +1,7 @@
 import { App, TFile, WorkspaceLeaf } from 'obsidian';
 import {
 	applyBackingStoreSize,
+	cappedPixelRatio,
 	devicePixelRatioFor,
 	readCanvasSurface,
 } from './canvas-surface';
@@ -178,7 +179,7 @@ export class OverlayManager {
 	private sizeOverlayToPage(overlay: HTMLCanvasElement, page: HTMLElement): void {
 		const rect = page.getBoundingClientRect();
 		if (rect.width === 0 || rect.height === 0) return;
-		const dpr = devicePixelRatioFor(window);
+		const dpr = cappedPixelRatio(rect.width, rect.height, devicePixelRatioFor(window));
 		applyBackingStoreSize(overlay, rect.width, rect.height, dpr);
 		overlay.setCssStyles({
 			width: `${rect.width}px`,

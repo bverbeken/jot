@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest';
 import {
 	applyBackingStoreSize,
+	cappedPixelRatio,
 	devicePixelRatioFor,
+	MAX_CANVAS_PIXELS,
 	readCanvasSurface,
 } from '../src/canvas-surface';
 
@@ -24,6 +26,25 @@ describe('devicePixelRatioFor', () => {
 	});
 	it('returns 1 when devicePixelRatio is not a number', () => {
 		expect(devicePixelRatioFor({ devicePixelRatio: NaN })).toBe(1);
+	});
+});
+
+describe('cappedPixelRatio', () => {
+	it('keeps the device ratio when the backing store fits', () => {
+		expect(cappedPixelRatio(800, 1000, 2)).toBe(2);
+	});
+	it('lowers the ratio so a zoomed-in page stays within the pixel limit', () => {
+		const dpr = cappedPixelRatio(2000, 2600, 2);
+		expect(dpr).toBeLessThan(2);
+		const canvas = makeCanvas();
+		applyBackingStoreSize(canvas, 2000, 2600, dpr);
+		expect(canvas.width * canvas.height).toBeLessThanOrEqual(16_777_216);
+	});
+	it('goes below 1 for pages larger than the limit in CSS pixels', () => {
+		expect(cappedPixelRatio(5000, 5000, 2)).toBeCloseTo(Math.sqrt(MAX_CANVAS_PIXELS / 25_000_000));
+	});
+	it('leaves the ratio alone for empty sizes', () => {
+		expect(cappedPixelRatio(0, 500, 2)).toBe(2);
 	});
 });
 
