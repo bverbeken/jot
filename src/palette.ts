@@ -12,9 +12,11 @@ import {
 	SUB_ARC_RADIUS,
 	SUB_ITEM_STEP_RAD,
 	SVG_HALF,
+	arcBounds,
 	arcCenterAngle,
 	arcCenterlinePath,
 	arcOrigin,
+	clampAxis,
 	mainSlotOffset,
 	slotAngle,
 	subSlotOffset,
@@ -64,6 +66,11 @@ export const PALETTE_WIDTHS = [0.0015, 0.0025, 0.005, 0.009] as const;
 const MAX_PALETTE_WIDTH = PALETTE_WIDTHS[PALETTE_WIDTHS.length - 1] ?? 0.009;
 
 const PALETTE_CLASS = 'jot-palette';
+
+// Half the largest item (the 40px tool/close button). Padded onto the arc
+// bounds when clamping so no slot — nor the band that overhangs it — clips off
+// the viewport edge.
+const PALETTE_ITEM_HALF = 20;
 
 const UNDO_SLOT_INDEX = 0;
 const REDO_SLOT_INDEX = 1;
@@ -160,10 +167,11 @@ export class Palette {
 		this.flipDown = this.shouldFlipDown(clientY, doc);
 		this.subArc = null;
 
+		const { x, y } = this.clampToViewport(clientX, clientY, doc);
 		const el = doc.createElement('div');
 		el.className = PALETTE_CLASS;
-		el.style.left = `${clientX}px`;
-		el.style.top = `${clientY}px`;
+		el.style.left = `${x}px`;
+		el.style.top = `${y}px`;
 		this.renderItems(el, doc);
 		parent.appendChild(el);
 
@@ -186,6 +194,30 @@ export class Palette {
 		const fitsUp = clientY - needed >= RADIAL_MARGIN_PX;
 		const fitsDown = clientY + needed <= win.innerHeight - RADIAL_MARGIN_PX;
 		return !fitsUp && fitsDown;
+	}
+
+	/**
+	 * Shift the press anchor so the entire fan — including any sub-arc that can
+	 * later open — stays on-screen when triggered near a viewport edge. The
+	 * items keep their offsets relative to the anchor, so moving the anchor
+	 * moves the whole palette as one and preserves its internal geometry.
+	 */
+	private clampToViewport(
+		clientX: number,
+		clientY: number,
+		doc: Document,
+	): { x: number; y: number } {
+		const win = doc.defaultView ?? window;
+		const bounds = arcBounds(this.handedness, this.flipDown, [
+			{ slot: COLOR_SLOT_INDEX, count: this.currentColors().length },
+			{ slot: TOOL_SLOT_INDEX, count: TOOLS.length },
+			{ slot: WIDTH_SLOT_INDEX, count: PALETTE_WIDTHS.length },
+		]);
+		const pad = PALETTE_ITEM_HALF + RADIAL_MARGIN_PX;
+		return {
+			x: clampAxis(clientX, bounds.minX, bounds.maxX, win.innerWidth, pad),
+			y: clampAxis(clientY, bounds.minY, bounds.maxY, win.innerHeight, pad),
+		};
 	}
 
 	private rerender() {
