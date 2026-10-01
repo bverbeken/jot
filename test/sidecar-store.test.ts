@@ -106,7 +106,7 @@ describe('SidecarStore.save', () => {
 		expect(fs.adapter.remove).not.toHaveBeenCalled();
 	});
 
-	it('records the write path in the self-save tracker', async () => {
+	it('remembers what it wrote so its own save is recognized', async () => {
 		const fs = makeFs();
 		const strokes = new StrokeStore();
 		strokes.setForKey('a.pdf::1', [
@@ -114,7 +114,7 @@ describe('SidecarStore.save', () => {
 		]);
 		const store = new SidecarStore(fs.adapter, strokes);
 		await store.save('a.pdf');
-		expect(store.isOwnRecentSave('a.pdf.jot.json')).toBe(true);
+		expect(await store.isOwnSave('a.pdf.jot.json')).toBe(true);
 	});
 });
 
@@ -153,53 +153,49 @@ describe('SidecarStore.scheduleSave', () => {
 	});
 });
 
-describe('SidecarStore.isOwnRecentSave', () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
+describe('SidecarStore.isOwnSave', () => {
+	const stroke = { points: [{ x: 0, y: 0, pressure: 0.5 }], color: '#000', width: 0.005, tool: 'pen' as const };
+
+	const savedStore = async () => {
+		const fs = makeFs();
+		const strokes = new StrokeStore();
+		strokes.setForKey('a.pdf::1', [stroke]);
+		const store = new SidecarStore(fs.adapter, strokes);
+		await store.save('a.pdf');
+		return { fs, store };
+	};
+
+	it('returns false for a path it never wrote', async () => {
+		const fs = makeFs({ 'a.pdf.jot.json': validPayload });
+		const store = new SidecarStore(fs.adapter, new StrokeStore());
+		expect(await store.isOwnSave('a.pdf.jot.json')).toBe(false);
 	});
-	afterEach(() => {
+
+	it('keeps recognizing its own save however long the sync echo takes', async () => {
+		vi.useFakeTimers();
+		const { store } = await savedStore();
+		vi.advanceTimersByTime(60_000);
+		expect(await store.isOwnSave('a.pdf.jot.json')).toBe(true);
+		expect(await store.isOwnSave('a.pdf.jot.json')).toBe(true);
 		vi.useRealTimers();
 	});
 
-	it('returns false for an unknown path', () => {
-		const fs = makeFs();
-		const store = new SidecarStore(fs.adapter, new StrokeStore());
-		expect(store.isOwnRecentSave('unknown.jot.json')).toBe(false);
+	it('returns false when another device changed the file right after our save', async () => {
+		const { fs, store } = await savedStore();
+		fs.files['a.pdf.jot.json'] = validPayload;
+		expect(await store.isOwnSave('a.pdf.jot.json')).toBe(false);
 	});
 
-	it('returns true for a path saved within the suppression window', async () => {
-		const fs = makeFs();
-		const strokes = new StrokeStore();
-		strokes.setForKey('a.pdf::1', [
-			{ points: [{ x: 0, y: 0, pressure: 0.5 }], color: '#000', width: 0.005, tool: 'pen' },
-		]);
-		const store = new SidecarStore(fs.adapter, strokes);
-		await store.save('a.pdf');
-		expect(store.isOwnRecentSave('a.pdf.jot.json')).toBe(true);
+	it('forgets its write after a reload, so a later identical file still reloads', async () => {
+		const { store } = await savedStore();
+		await store.load('a.pdf');
+		expect(await store.isOwnSave('a.pdf.jot.json')).toBe(false);
 	});
 
-	it('returns false once the suppression window has elapsed', async () => {
-		const fs = makeFs();
-		const strokes = new StrokeStore();
-		strokes.setForKey('a.pdf::1', [
-			{ points: [{ x: 0, y: 0, pressure: 0.5 }], color: '#000', width: 0.005, tool: 'pen' },
-		]);
-		const store = new SidecarStore(fs.adapter, strokes);
-		await store.save('a.pdf');
-		vi.advanceTimersByTime(1600);
-		expect(store.isOwnRecentSave('a.pdf.jot.json')).toBe(false);
-	});
-
-	it('consumes the entry on the first true return so the next call is false', async () => {
-		const fs = makeFs();
-		const strokes = new StrokeStore();
-		strokes.setForKey('a.pdf::1', [
-			{ points: [{ x: 0, y: 0, pressure: 0.5 }], color: '#000', width: 0.005, tool: 'pen' },
-		]);
-		const store = new SidecarStore(fs.adapter, strokes);
-		await store.save('a.pdf');
-		expect(store.isOwnRecentSave('a.pdf.jot.json')).toBe(true);
-		expect(store.isOwnRecentSave('a.pdf.jot.json')).toBe(false);
+	it('returns false when the file can no longer be read', async () => {
+		const { fs, store } = await savedStore();
+		vi.mocked(fs.adapter.read).mockRejectedValueOnce(new Error('gone'));
+		expect(await store.isOwnSave('a.pdf.jot.json')).toBe(false);
 	});
 });
 
