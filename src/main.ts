@@ -110,11 +110,11 @@ export default class JotPlugin extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on('modify', (file) => {
+			this.app.vault.on('modify', async (file) => {
 				if (!isSidecarPath(file.path)) return;
-				if (this.sidecar.isOwnRecentSave(file.path)) return;
+				if (await this.sidecar.isOwnSave(file.path)) return;
 				const pdfPath = pdfPathFromSidecar(file.path);
-				if (pdfPath) void this.reloadSidecar(pdfPath);
+				if (pdfPath) await this.reloadSidecar(pdfPath);
 			}),
 		);
 

@@ -7,12 +7,13 @@ import {
 import type { StrokeStore } from './stroke-store';
 
 const SAVE_DEBOUNCE_MS = 250;
-const SELF_SAVE_SUPPRESS_MS = 1500;
 const PLUGIN_LOG = '[jot]';
 
 export class SidecarStore {
 	private saveTimers = new Map<string, number>();
-	private recentSelfSaves = new Map<string, number>();
+	// What we last wrote to each sidecar, so a modify event can be told apart
+	// from our own write echoing back through sync.
+	private lastWritten = new Map<string, string>();
 
 	constructor(
 		private adapter: DataAdapter,
@@ -21,6 +22,7 @@ export class SidecarStore {
 
 	async load(pdfPath: string): Promise<void> {
 		const path = jotPathFor(pdfPath);
+		this.lastWritten.delete(path);
 		this.strokes.clearFor(pdfPath);
 		try {
 			if (!(await this.adapter.exists(path))) return;
@@ -42,13 +44,15 @@ export class SidecarStore {
 		const payload = this.strokes.buildPayload(pdfPath);
 		try {
 			if (!payload) {
+				this.lastWritten.delete(path);
 				if (await this.adapter.exists(path)) {
 					await this.adapter.remove(path);
 				}
 				return;
 			}
-			await this.adapter.write(path, JSON.stringify(payload, null, 2));
-			this.recentSelfSaves.set(path, Date.now());
+			const text = JSON.stringify(payload, null, 2);
+			this.lastWritten.set(path, text);
+			await this.adapter.write(path, text);
 		} catch (err) {
 			console.error(`${PLUGIN_LOG} save failed for ${path}:`, err);
 		}
@@ -64,16 +68,20 @@ export class SidecarStore {
 		this.saveTimers.set(pdfPath, id);
 	}
 
-	isOwnRecentSave(path: string): boolean {
-		const writtenAt = this.recentSelfSaves.get(path);
-		if (writtenAt === undefined) return false;
-		if (Date.now() - writtenAt >= SELF_SAVE_SUPPRESS_MS) return false;
-		this.recentSelfSaves.delete(path);
-		return true;
+	/** True when the sidecar on disk is exactly what we last wrote, i.e. nothing new to load. */
+	async isOwnSave(path: string): Promise<boolean> {
+		const written = this.lastWritten.get(path);
+		if (written === undefined) return false;
+		try {
+			return (await this.adapter.read(path)) === written;
+		} catch {
+			return false;
+		}
 	}
 
 	async discard(pdfPath: string): Promise<void> {
 		const path = jotPathFor(pdfPath);
+		this.lastWritten.delete(path);
 		try {
 			if (await this.adapter.exists(path)) {
 				await this.adapter.remove(path);
