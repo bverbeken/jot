@@ -14,6 +14,7 @@ import {
 } from './stroke-math';
 import { drawHighlighterPolyline, drawSegment } from './stroke-render';
 import type { StrokeStore } from './stroke-store';
+import { StylusGestureGuard } from './stylus-gesture-guard';
 import { TwoFingerHoldDetector } from './two-finger-hold';
 import type { UndoController } from './undo-controller';
 
@@ -37,6 +38,7 @@ export class PointerEventHandler {
 	private activePointerId: number | null = null;
 	private holdIndicator: HTMLElement | null = null;
 	private twoFingerIndicator: HTMLElement | null = null;
+	private stylusGuard = new StylusGestureGuard();
 	private longPress: LongPressDetector;
 	private twoFingerHold: TwoFingerHoldDetector;
 
@@ -71,6 +73,7 @@ export class PointerEventHandler {
 	}
 
 	private onPointerDown(e: PointerEvent): void {
+		if (e.pointerType === 'pen') this.stylusGuard.penDown(e.pointerId);
 		if (e.pointerType === 'touch') {
 			this.twoFingerHold.pointerDown(e.pointerId, e.clientX, e.clientY);
 			return;
@@ -104,6 +107,7 @@ export class PointerEventHandler {
 	}
 
 	private onFinish(e: PointerEvent): void {
+		if (e.pointerType === 'pen') this.stylusGuard.penUp(e.pointerId);
 		if (e.pointerType === 'touch') {
 			this.twoFingerHold.pointerUp(e.pointerId);
 			return;
@@ -260,15 +264,14 @@ export class PointerEventHandler {
 
 	private blockStylusGesturePreemption(): void {
 		const blockStylus = (e: TouchEvent) => {
-			for (let i = 0; i < e.touches.length; i++) {
-				const t = e.touches.item(i) as Touch & { touchType?: string };
-				if (t?.touchType === 'stylus') {
-					e.preventDefault();
-					return;
-				}
-			}
+			if (this.stylusGuard.shouldBlock(Array.from(e.touches))) e.preventDefault();
 		};
 		this.canvas.addEventListener('touchstart', blockStylus, { passive: false });
 		this.canvas.addEventListener('touchmove', blockStylus, { passive: false });
+		const resetWhenAllLifted = (e: TouchEvent) => {
+			if (e.touches.length === 0) this.stylusGuard.reset();
+		};
+		this.canvas.addEventListener('touchend', resetWhenAllLifted);
+		this.canvas.addEventListener('touchcancel', resetWhenAllLifted);
 	}
 }
