@@ -9,16 +9,22 @@ import { pageKey } from './jot-file';
 import { drawStroke } from './stroke-render';
 import type { StrokeStore } from './stroke-store';
 
-const OVERLAY_CLASS = 'jot-overlay';
+// Up to 1.0.8, unloading left overlays and per-page observers behind, and
+// nothing can disconnect those observers now. They look overlays up by the
+// old class, so a new class keeps them from redrawing ours with stale strokes.
+const OVERLAY_CLASS = 'jot-overlay-canvas';
+const LEGACY_OVERLAY_SELECTOR = 'canvas.jot-overlay';
 const PAGE_ANCHOR_CLASS = 'jot-page-anchor';
 const PASSTHROUGH_CLASS = 'jot-passthrough';
-const PAGE_OBSERVED_ATTR = 'data-jot-observed';
 
 export const OVERLAY_KEY_ATTR = 'data-jot-key';
 
 export class OverlayManager {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
 	private pageObservers = new Set<MutationObserver | ResizeObserver>();
+	// Tracked here rather than in the DOM: 1.0.8 left its marker attribute on
+	// pages whose observers it never disconnected.
+	private observedPages = new WeakSet<HTMLElement>();
 
 	constructor(
 		private app: App,
@@ -67,13 +73,13 @@ export class OverlayManager {
 		this.containerObservers.clear();
 		this.pageObservers.forEach((observer) => observer.disconnect());
 		this.pageObservers.clear();
+		this.observedPages = new WeakSet();
 		this.app.workspace.iterateAllLeaves((leaf) => {
 			const container = leaf.view.containerEl;
 			container.querySelectorAll(`canvas.${OVERLAY_CLASS}`).forEach((el) => el.remove());
-			container.querySelectorAll(`.${PAGE_ANCHOR_CLASS}`).forEach((page) => {
-				page.classList.remove(PAGE_ANCHOR_CLASS);
-				page.removeAttribute(PAGE_OBSERVED_ATTR);
-			});
+			container
+				.querySelectorAll(`.${PAGE_ANCHOR_CLASS}`)
+				.forEach((page) => page.classList.remove(PAGE_ANCHOR_CLASS));
 			container
 				.querySelectorAll(`.${PASSTHROUGH_CLASS}`)
 				.forEach((el) => el.classList.remove(PASSTHROUGH_CLASS));
@@ -151,6 +157,7 @@ export class OverlayManager {
 		if (Number.isNaN(pageNumber)) return;
 		const key = pageKey(filePath, pageNumber);
 
+		page.querySelector(LEGACY_OVERLAY_SELECTOR)?.remove();
 		const existing = page.querySelector<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`);
 		if (existing) {
 			if (existing.getAttribute(OVERLAY_KEY_ATTR) === key) {
@@ -171,8 +178,8 @@ export class OverlayManager {
 		this.wireOverlay(overlay);
 		this.redrawPage(overlay);
 
-		if (page.getAttribute(PAGE_OBSERVED_ATTR) === '1') return;
-		page.setAttribute(PAGE_OBSERVED_ATTR, '1');
+		if (this.observedPages.has(page)) return;
+		this.observedPages.add(page);
 
 		const findOverlay = () =>
 			page.querySelector<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`);
