@@ -38,11 +38,11 @@ describe('OverlayManager plugin reload', () => {
 		const leaf = pdfLeafWithPages(2);
 		const manager = new OverlayManager(appWith(leaf), new StrokeStore(), () => {});
 		manager.attachToActivePdf();
-		expect(leaf.view.containerEl.querySelectorAll('canvas.jot-overlay')).toHaveLength(2);
+		expect(leaf.view.containerEl.querySelectorAll('canvas.jot-overlay-canvas')).toHaveLength(2);
 
 		manager.detachAll();
 
-		expect(leaf.view.containerEl.querySelectorAll('canvas.jot-overlay')).toHaveLength(0);
+		expect(leaf.view.containerEl.querySelectorAll('canvas.jot-overlay-canvas')).toHaveLength(0);
 	});
 
 	// Overlays left behind by a previous plugin instance keep that instance's
@@ -58,6 +58,35 @@ describe('OverlayManager plugin reload', () => {
 		second.attachToActivePdf();
 
 		expect(wired).toHaveLength(2);
-		expect(leaf.view.containerEl.querySelectorAll('canvas.jot-overlay')).toHaveLength(2);
+		expect(leaf.view.containerEl.querySelectorAll('canvas.jot-overlay-canvas')).toHaveLength(2);
+	});
+
+	it('replaces overlays a 1.0.8 instance left behind and hides ours from its observers', () => {
+		const leaf = pdfLeafWithPages(2);
+		leaf.view.containerEl.querySelectorAll<HTMLElement>('.page').forEach((page, i) => {
+			const stale = document.createElement('canvas');
+			stale.className = 'jot-overlay';
+			stale.setAttribute('data-jot-key', `doc.pdf#${i + 1}`);
+			page.appendChild(stale);
+			page.setAttribute('data-jot-observed', '1');
+		});
+
+		const wired: HTMLCanvasElement[] = [];
+		new OverlayManager(appWith(leaf), new StrokeStore(), (c) => wired.push(c)).attachToActivePdf();
+
+		expect(wired).toHaveLength(2);
+		// 1.0.8's leftover observers find overlays with this selector.
+		expect(leaf.view.containerEl.querySelectorAll('canvas.jot-overlay')).toHaveLength(0);
+		expect(leaf.view.containerEl.querySelectorAll('canvas.jot-overlay-canvas')).toHaveLength(2);
+	});
+
+	it('keeps its own overlay when re-attaching to the same page', () => {
+		const leaf = pdfLeafWithPages(1);
+		const wired: HTMLCanvasElement[] = [];
+		const manager = new OverlayManager(appWith(leaf), new StrokeStore(), (c) => wired.push(c));
+		manager.attachToActivePdf();
+		manager.attachToActivePdf();
+
+		expect(wired).toHaveLength(1);
 	});
 });
