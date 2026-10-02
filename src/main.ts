@@ -127,7 +127,7 @@ export default class JotPlugin extends Plugin {
 	}
 
 	onunload() {
-		this.overlays?.disconnectAll();
+		this.overlays?.detachAll();
 		this.sidecar?.cancelAllPending();
 		this.palette?.hide();
 	}
