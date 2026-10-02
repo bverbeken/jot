@@ -18,6 +18,7 @@ export const OVERLAY_KEY_ATTR = 'data-jot-key';
 
 export class OverlayManager {
 	private containerObservers = new Map<WorkspaceLeaf, MutationObserver>();
+	private pageObservers = new Set<MutationObserver | ResizeObserver>();
 
 	constructor(
 		private app: App,
@@ -55,9 +56,28 @@ export class OverlayManager {
 		}
 	}
 
-	disconnectAll(): void {
+	/**
+	 * Undo everything attachToActivePdf did. The overlays must go too: their
+	 * pointer listeners close over this plugin instance, so leaving them behind
+	 * on unload would keep the old instance — and its settings — drawing until
+	 * Obsidian restarts, and stop the next instance from wiring those pages.
+	 */
+	detachAll(): void {
 		this.containerObservers.forEach((observer) => observer.disconnect());
 		this.containerObservers.clear();
+		this.pageObservers.forEach((observer) => observer.disconnect());
+		this.pageObservers.clear();
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			const container = leaf.view.containerEl;
+			container.querySelectorAll(`canvas.${OVERLAY_CLASS}`).forEach((el) => el.remove());
+			container.querySelectorAll(`.${PAGE_ANCHOR_CLASS}`).forEach((page) => {
+				page.classList.remove(PAGE_ANCHOR_CLASS);
+				page.removeAttribute(PAGE_OBSERVED_ATTR);
+			});
+			container
+				.querySelectorAll(`.${PASSTHROUGH_CLASS}`)
+				.forEach((el) => el.classList.remove(PASSTHROUGH_CLASS));
+		});
 	}
 
 	redrawPage(canvas: HTMLCanvasElement): void {
@@ -157,7 +177,7 @@ export class OverlayManager {
 		const findOverlay = () =>
 			page.querySelector<HTMLCanvasElement>(`canvas.${OVERLAY_CLASS}`);
 
-		new MutationObserver(() => {
+		const mutationObserver = new MutationObserver(() => {
 			const current = findOverlay();
 			if (!current) return;
 			this.disableTextLayerInteraction(page);
@@ -166,14 +186,18 @@ export class OverlayManager {
 				page.appendChild(current);
 				this.redrawPage(current);
 			}
-		}).observe(page, { childList: true });
+		});
+		mutationObserver.observe(page, { childList: true });
+		this.pageObservers.add(mutationObserver);
 
-		new ResizeObserver(() => {
+		const resizeObserver = new ResizeObserver(() => {
 			const current = findOverlay();
 			if (!current) return;
 			this.sizeOverlayToPage(current, page);
 			this.redrawPage(current);
-		}).observe(page);
+		});
+		resizeObserver.observe(page);
+		this.pageObservers.add(resizeObserver);
 	}
 
 	private sizeOverlayToPage(overlay: HTMLCanvasElement, page: HTMLElement): void {

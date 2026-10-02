@@ -51,6 +51,58 @@ describe('arcOrigin', () => {
 	});
 });
 
+describe('handedness mirroring', () => {
+	const mirrored = (o: { ox: number; oy: number }) => ({ ox: -o.ox, oy: o.oy });
+
+	for (const flipDown of [false, true]) {
+		const direction = flipDown ? 'downward' : 'upward';
+
+		it(`mirrors the ${direction} arc origin across the vertical axis`, () => {
+			const left = arcOrigin('left', flipDown);
+			const right = arcOrigin('right', flipDown);
+			expect(left.ox).toBeCloseTo(-right.ox);
+			expect(left.oy).toBeCloseTo(right.oy);
+		});
+
+		it(`mirrors every ${direction} main-arc slot across the vertical axis`, () => {
+			const left = new Set<string>();
+			const right = new Set<string>();
+			for (let slot = 0; slot < MAIN_ITEM_COUNT; slot++) {
+				const l = mainSlotOffset(slot, 'left', flipDown);
+				const r = mirrored(mainSlotOffset(slot, 'right', flipDown));
+				left.add(`${l.ox},${l.oy}`);
+				right.add(`${r.ox},${r.oy}`);
+			}
+			expect(left).toEqual(right);
+		});
+
+		// The slot order isn't reversed, so a left-handed sub-arc mirrors the
+		// right-handed one opened from the opposite end of the main arc.
+		it(`mirrors every ${direction} sub-arc item across the vertical axis`, () => {
+			for (let slot = 0; slot < MAIN_ITEM_COUNT; slot++) {
+				const mirrorSlot = MAIN_ITEM_COUNT - 1 - slot;
+				const left = new Set<string>();
+				const right = new Set<string>();
+				for (let i = 0; i < 7; i++) {
+					const l = subSlotOffset(i, 7, slotAngle(slot, 'left', flipDown), 'left', flipDown);
+					const r = mirrored(
+						subSlotOffset(i, 7, slotAngle(mirrorSlot, 'right', flipDown), 'right', flipDown),
+					);
+					left.add(`${l.ox},${l.oy}`);
+					right.add(`${r.ox},${r.oy}`);
+				}
+				expect(left).toEqual(right);
+			}
+		});
+
+		it(`fans the ${direction} main arc away from the pen hand`, () => {
+			const center = (MAIN_ITEM_COUNT - 1) / 2;
+			expect(mainSlotOffset(center, 'right', flipDown).ox).toBeLessThan(0);
+			expect(mainSlotOffset(center, 'left', flipDown).ox).toBeGreaterThan(0);
+		});
+	}
+});
+
 describe('slotAngle', () => {
 	it('places the center slot at the fan center', () => {
 		const center = (MAIN_ITEM_COUNT - 1) / 2;
